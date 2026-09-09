@@ -84,6 +84,11 @@ function dedupeStored(places: Experience[]): Experience[] {
   return [...best.values()];
 }
 
+/** Vercel serverless: read-only FS, frozen background tasks, 60 s cap — the
+ * scrape pipeline never runs there by design. Vercel serves Turso rows; live
+ * scraping happens on the Render backend or the local harvester. */
+const ON_VERCEL = process.env.VERCEL === "1";
+
 export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}): Promise<PlacesResult> {
   const city = cityRaw.trim();
   if (!city) throw new Error("City required");
@@ -111,7 +116,7 @@ export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}
   // request path; per-city singleton, state visible across processes via kv)
   let collectPromise: Promise<CollectState> | null = null;
   const state = await getCollectState(cityKey);
-  if (!(await isCollectFresh(cityKey)) && state?.status !== "running") {
+  if (!ON_VERCEL && !(await isCollectFresh(cityKey)) && state?.status !== "running") {
     collectPromise = startCollect(cityKey, ctx);
   }
   let pending = state?.status === "running" || !!collectPromise;

@@ -51,6 +51,20 @@ export async function isCollectFresh(city: string): Promise<boolean> {
 
 /** Idempotent trigger: one scrape per city per process, everyone shares it. */
 export function startCollect(city: string, ctx: GeoCtx): Promise<CollectState> {
+  if (process.env.VERCEL === "1") {
+    // defense-in-depth: serverless functions freeze background work when the
+    // response is sent — a scrape started here would only burn the 60 s cap.
+    return Promise.resolve({
+      status: "error",
+      startedAt: Date.now(),
+      finishedAt: Date.now(),
+      places: 0,
+      added: 0,
+      sourcesDone: 0,
+      sourcesTotal: SOURCES_TOTAL,
+      error: "scraping is disabled on Vercel — use the Render backend or the local harvester",
+    });
+  }
   const key = city.toLowerCase();
   const existing = running.get(key);
   if (existing) return existing;

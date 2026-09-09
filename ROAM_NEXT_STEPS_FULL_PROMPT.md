@@ -287,12 +287,21 @@ Repo realities that differ from the memory in PART A/B/C (all handled in code):
      adapter arg/result encoding round-trip unit-tested for all scalar types
 
 ### USER ACTION LIST (in order)
+0. Clean the seed source (DONE 2026-09-10): `npm run clean` removed 486 junk rows
+   (485 foreign-coords test scrapes + 1 stub) → 1228 → 742 places. Backup at
+   `data/roam.backup-*.db`. Re-run anytime; `--dry-run` previews; the cleaner
+   enforces the India-only bbox + junk-name + bare-stub + dedupe rules.
 1. Push repo to GitHub; connect it in Vercel (Settings → Git, branch `main`).
    Confirm a trivial push redeploys and the permanent URL still works.
 2. `turso db create roam` → put `LIBSQL_URL` + `LIBSQL_AUTH_TOKEN` in Vercel
    (Production + Preview).
-3. Seed: `LIBSQL_URL=… LIBSQL_AUTH_TOKEN=… node scripts/seed.mjs` → expect
-   "745 places / 838 rows"; spot-check `turso db shell roam "SELECT COUNT(*) FROM places;"`.
+3. Seed: `LIBSQL_URL=… LIBSQL_AUTH_TOKEN=… npm run seed` → expect ~"742 places";
+   spot-check `turso db shell roam "SELECT COUNT(*) FROM places;"`.
+   Re-seeding over existing remote data: add `--wipe` (wipes remote tables,
+   keeps schema + same URL — NEVER `turso db destroy`, it changes the URL and
+   breaks Vercel/Render env vars). Pure remote wipe without reseeding:
+   `npm run seed -- --wipe` on an empty local store, or
+   `turso db shell roam "DELETE FROM places;"` per table.
 4. Confirm the permanent URL now serves DB-backed rows (procedure in 1.4).
 5. Create the Render service (settings in 2.2 — note `uvicorn main:app`!) with the
    same `LIBSQL_URL`/`LIBSQL_AUTH_TOKEN` + `ALLOWED_ORIGINS=https://<vercel-url>`

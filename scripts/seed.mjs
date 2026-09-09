@@ -21,6 +21,11 @@ const arg = (name, def) => {
   return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : def;
 };
 const CHECK = process.argv.includes("--check");
+// --wipe: DELETE every row from the remote tables first (schema kept), then
+// seed fresh. Use when Turso already holds stale/dirty data. The Turso URL
+// stays the same — do NOT `turso db destroy` (that changes the URL and breaks
+// the env vars in Vercel/Render).
+const WIPE = process.argv.includes("--wipe");
 
 const url = process.env.LIBSQL_URL;
 const token = process.env.LIBSQL_AUTH_TOKEN;
@@ -68,6 +73,10 @@ if (ddl) {
 }
 
 let totalRows = 0;
+if (WIPE && !CHECK) {
+  await remote.batch(TABLES.map((t) => ({ sql: `DELETE FROM ${t.name}`, args: [] })), "write");
+  console.log("🧹 remote tables wiped (schema kept)\n");
+}
 for (const t of TABLES) {
   let localCount = 0;
   try {

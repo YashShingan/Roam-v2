@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "eslint src",
     "harvest": "node scripts/harvest.mjs",
-    "seed": "node scripts/seed.mjs"
+    "seed": "node scripts/seed.mjs",
+    "clean": "node scripts/clean.mjs"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",

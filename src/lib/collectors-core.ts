@@ -720,27 +720,44 @@ interface GeoRow {
 }
 
 let geoRows: GeoRow[] | null = null;
+let geoUnavailable = false; // set when the disk cache is unusable (read-only FS)
 
 async function loadGeoNames(): Promise<GeoRow[]> {
   if (geoRows) return geoRows;
+  if (geoUnavailable) return [];
+  // The bulk dump needs a writable disk for its cache. On read-only
+  // filesystems (Vercel /var/task) this source degrades to empty instead of
+  // erroring — bulk harvesting belongs on the backend/local harvester anyway.
   const cacheDir = path.join(process.cwd(), "data", "cache");
   const txtPath = path.join(cacheDir, "geonames-in.txt");
-  fs.mkdirSync(cacheDir, { recursive: true });
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  } catch (e) {
+    geoUnavailable = true;
+    console.error("[geonames] no writable cache dir — source disabled:", (e as Error).message);
+    return [];
+  }
   let raw: string;
-  if (fs.existsSync(txtPath)) {
-    raw = fs.readFileSync(txtPath, "utf8");
-  } else {
-    const zipPath = path.join(cacheDir, "cities500.zip");
-    if (!fs.existsSync(zipPath)) {
-      const res = await fetchWithTimeout("https://download.geonames.org/export/dump/cities500.zip", {
-        timeoutMs: 60000,
-      });
-      if (!res.ok) throw new Error(`GeoNames download HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      fs.writeFileSync(zipPath, buf);
+  try {
+    if (fs.existsSync(txtPath)) {
+      raw = fs.readFileSync(txtPath, "utf8");
+    } else {
+      const zipPath = path.join(cacheDir, "cities500.zip");
+      if (!fs.existsSync(zipPath)) {
+        const res = await fetchWithTimeout("https://download.geonames.org/export/dump/cities500.zip", {
+          timeoutMs: 60000,
+        });
+        if (!res.ok) throw new Error(`GeoNames download HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        fs.writeFileSync(zipPath, buf);
+      }
+      raw = readSingleTxtFromZip(fs.readFileSync(zipPath)).toString("utf8");
+      fs.writeFileSync(txtPath, raw.split("\n").filter((l) => l.includes("\tIN\t")).join("\n"));
     }
-    raw = readSingleTxtFromZip(fs.readFileSync(zipPath)).toString("utf8");
-    fs.writeFileSync(txtPath, raw.split("\n").filter((l) => l.includes("\tIN\t")).join("\n"));
+  } catch (e) {
+    geoUnavailable = true;
+    console.error("[geonames] dump unavailable on this host — source disabled:", (e as Error).message);
+    return [];
   }
   geoRows = raw
     .split("\n")
