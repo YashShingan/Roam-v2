@@ -1,0 +1,8 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.28
+aiosqlite>=0.20
+pydantic>=2.10
+beautifulsoup4>=4.12
+thefuzz>=0.22
+tenacity>=8.2

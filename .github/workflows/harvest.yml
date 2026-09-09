@@ -1,0 +1,29 @@
+name: Nightly harvest
+on:
+  schedule:
+    - cron: "30 20 * * *" # 02:00 IST
+  workflow_dispatch: {}
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - run: |
+          npm run start &
+          sleep 6
+          node scripts/harvest.mjs http://localhost:3000
+        env:
+          COLLECT_TOKEN: ${{ secrets.COLLECT_TOKEN }}
+      - name: Commit harvested SQLite
+        run: |
+          git config user.name "roam-harvester"
+          git config user.email "harvester@roam.local"
+          git add data/roam.db || true
+          git diff --cached --quiet || git commit -m "harvest: nightly place refresh [skip ci]"
+          git push || true

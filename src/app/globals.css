@@ -1,0 +1,322 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #f5f2eb;
+  --card: #fcfaf7;
+  --surface: #efe9dd;
+  --primary: #d96b43;
+  --primary-soft: #f2c9b4;
+  --primary-contrast: #ffffff;
+  --accent: #7a9a7b;
+  --accent-soft: #d3e2d3;
+  --foreground: #2d2926;
+  --muted-foreground: #8c857b;
+  --border: #e4dccc;
+  --ring: #d96b43;
+  --clay-dark: rgba(45, 41, 38, 0.14);
+  --clay-darker: rgba(45, 41, 38, 0.22);
+  --clay-light: rgba(255, 255, 255, 0.9);
+  --clay-inset: rgba(45, 41, 38, 0.06);
+  --gold: #d9a441;
+}
+
+.dark {
+  --background: #1a1715;
+  --card: #242120;
+  --surface: #1e1b19;
+  --primary: #e07b50;
+  --primary-soft: #5a3a2b;
+  --primary-contrast: #fff7f0;
+  --accent: #8fae90;
+  --accent-soft: #37453a;
+  --foreground: #f0eae0;
+  --muted-foreground: #a89f92;
+  --border: #332e2a;
+  --ring: #e07b50;
+  --clay-dark: rgba(0, 0, 0, 0.5);
+  --clay-darker: rgba(0, 0, 0, 0.65);
+  --clay-light: rgba(255, 255, 255, 0.07);
+  --clay-inset: rgba(0, 0, 0, 0.28);
+  --gold: #e0b45c;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-surface: var(--surface);
+  --color-primary: var(--primary);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-contrast: var(--primary-contrast);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-gold: var(--gold);
+  --radius-card: 22px;
+  --font-sans: var(--font-dm-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--primary-soft);
+}
+
+/* ─── Drift Claymorphism utilities ─────────────────────────────────────────── */
+.clay-raised {
+  background: var(--card);
+  border-radius: 22px;
+  box-shadow:
+    0 1px 2px var(--clay-inset),
+    0 8px 18px -8px var(--clay-dark),
+    inset 0 -3px 6px var(--clay-inset),
+    inset 0 2px 3px var(--clay-light);
+}
+
+@media (max-width: 640px) {
+  .clay-raised {
+    border-radius: 18px;
+    box-shadow:
+      0 1px 2px var(--clay-inset),
+      0 6px 14px -6px var(--clay-dark),
+      inset 0 -2px 4px var(--clay-inset),
+      inset 0 1.5px 2px var(--clay-light);
+  }
+}
+
+.clay-raised-lg {
+  background: var(--card);
+  border-radius: 26px;
+  box-shadow:
+    0 2px 4px var(--clay-inset),
+    0 18px 40px -14px var(--clay-dark),
+    inset 0 -4px 8px var(--clay-inset),
+    inset 0 3px 4px var(--clay-light);
+}
+
+@media (max-width: 640px) {
+  .clay-raised-lg {
+    border-radius: 20px;
+  }
+}
+
+.clay-raised-sm {
+  background: var(--card);
+  border-radius: 14px;
+  box-shadow:
+    0 1px 2px var(--clay-inset),
+    0 4px 10px -6px var(--clay-dark),
+    inset 0 -2px 4px var(--clay-inset),
+    inset 0 1px 2px var(--clay-light);
+}
+
+@media (max-width: 640px) {
+  .clay-raised-sm {
+    border-radius: 12px;
+  }
+}
+
+.clay-pressed {
+  box-shadow:
+    inset 0 3px 8px var(--clay-darker),
+    inset 0 -1px 2px var(--clay-light) !important;
+}
+.clay-primary {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--primary) 92%, white), var(--primary));
+  color: var(--primary-contrast);
+  box-shadow:
+    0 8px 18px -8px color-mix(in srgb, var(--primary) 55%, transparent),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.18),
+    inset 0 2px 3px rgba(255, 255, 255, 0.45);
+}
+.clay-primary-pressed {
+  box-shadow:
+    inset 0 4px 10px rgba(0, 0, 0, 0.35),
+    inset 0 -1px 2px rgba(255, 255, 255, 0.25) !important;
+}
+.clay-dock {
+  background: color-mix(in srgb, var(--card) 86%, transparent);
+  backdrop-filter: blur(14px);
+  border-radius: 999px;
+  box-shadow:
+    0 2px 6px var(--clay-inset),
+    0 16px 34px -12px var(--clay-dark),
+    inset 0 -3px 8px var(--clay-inset),
+    inset 0 2px 3px var(--clay-light);
+}
+.clay-lift {
+  transition:
+    transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Only hover lift on non-touch devices */
+@media (hover: hover) {
+  .clay-lift:hover {
+    transform: translateY(-4px) rotate(0.4deg);
+    box-shadow:
+      0 2px 4px var(--clay-inset),
+      0 22px 44px -14px var(--clay-dark),
+      inset 0 -4px 8px var(--clay-inset),
+      inset 0 3px 4px var(--clay-light);
+  }
+}
+
+/* ─── Motion keyframes ─────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(90deg, var(--surface) 25%, color-mix(in srgb, var(--surface) 55%, var(--card)) 50%, var(--surface) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.6s infinite linear;
+  border-radius: 14px;
+}
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.animate-marquee {
+  animation: marquee 36s linear infinite;
+}
+@keyframes blob-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(26px, -18px) scale(1.06); }
+  66% { transform: translate(-18px, 14px) scale(0.96); }
+}
+.animate-blob {
+  animation: blob-drift 14s ease-in-out infinite;
+}
+@keyframes orb-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+  50% { box-shadow: 0 0 0 18px color-mix(in srgb, var(--primary) 0%, transparent); }
+}
+.animate-orb {
+  animation: orb-pulse 1.8s ease-in-out infinite;
+}
+
+/* Scroll progress gradient */
+.scroll-progress {
+  background: linear-gradient(90deg, var(--primary), var(--accent));
+}
+
+/* Focus */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Thin scrollbars inside panels */
+.thin-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.thin-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
+.thin-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* Hide scrollbar but keep functionality */
+.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+
+/* ─── Responsive container ─────────────────────────────────────────────────── */
+.container-app {
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+@media (min-width: 640px) {
+  .container-app { padding-left: 24px; padding-right: 24px; }
+}
+
+/* ─── Safe area for iOS bottom bar ─────────────────────────────────────────── */
+.safe-bottom {
+  padding-bottom: max(24px, env(safe-area-inset-bottom));
+}
+
+/* ─── Mobile-first card image ──────────────────────────────────────────────── */
+.card-image {
+  aspect-ratio: 16/10;
+  object-fit: cover;
+}
+
+/* ─── Fade scroll indicators ──────────────────────────────────────────────── */
+.scroll-fade {
+  mask-image: linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+}
+
+/* ─── Reduced motion — hard requirement ────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ─── Print (plan export) ──────────────────────────────────────────────────── */
+@media print {
+  body * { visibility: hidden; }
+  .print-plan, .print-plan * { visibility: visible; }
+  .print-plan { position: absolute; inset: 0; padding: 24px; }
+  .no-print { display: none !important; }
+}
+
+/* ─── MapLibre container ───────────────────────────────────────────────────── */
+.maplibregl-map { border-radius: 22px; }
+@media (max-width: 640px) {
+  .maplibregl-map { border-radius: 16px; }
+}
+.maplibregl-ctrl-group {
+  border-radius: 12px !important;
+  overflow: hidden;
+}
+
+/* ─── Category pins ────────────────────────────────────────────────────────── */
+.map-pin {
+  --pin: #d96b43;
+  width: 34px;
+  height: 34px;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: var(--pin);
+  color: #fff;
+  border-radius: 50% 50% 50% 4px;
+  transform: rotate(-45deg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3), inset 0 2px 3px rgba(255, 255, 255, 0.4);
+  transition: transform 0.15s ease;
+}
+.map-pin > span {
+  transform: rotate(45deg);
+  font-size: 15px;
+  line-height: 1;
+}
+@media (hover: hover) {
+  .map-pin:hover, .map-pin-selected {
+    transform: rotate(-45deg) scale(1.22);
+    z-index: 5;
+  }
+}
+
+/* ─── Touch-friendly tap targets ───────────────────────────────────────────── */
+@media (pointer: coarse) {
+  button, [role="button"], a {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

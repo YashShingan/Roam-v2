@@ -1,0 +1,52 @@
+# Optional self-hosting extras — everything here is OPTIONAL and keyless.
+# Roam itself needs none of these: docker compose up only for the add-ons you want.
+services:
+  ollama:
+    # Optional better NLU: set OLLAMA_URL=http://ollama:11434 for the assistant.
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: ["ollama:/root/.ollama"]
+    profiles: ["ai"]
+
+  umami:
+    # Optional privacy-friendly analytics (no cookies, GDPR-friendly).
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    environment:
+      DATABASE_URL: postgresql://umami:umami@umami-db:5432/umami
+      DATABASE_TYPE: postgresql
+    ports: ["3001:3000"]
+    depends_on: [umami-db]
+    profiles: ["analytics"]
+
+  umami-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: umami
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: umami
+    volumes: ["umami-db:/var/lib/postgresql/data"]
+    profiles: ["analytics"]
+
+  glitchtip:
+    # Optional OSS error tracking.
+    image: glitchtip/glitchtip
+    environment:
+      DATABASE_URL: postgres://glitchtip:glitchtip@glitchtip-db:5432/glitchtip
+      SECRET_KEY: change-me
+    ports: ["3002:8000"]
+    depends_on: [glitchtip-db]
+    profiles: ["errors"]
+
+  glitchtip-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: glitchtip
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: glitchtip
+    volumes: ["glitchtip-db:/var/lib/postgresql/data"]
+    profiles: ["errors"]
+
+volumes:
+  ollama:
+  umami-db:
+  glitchtip-db:
