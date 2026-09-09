@@ -49,7 +49,7 @@ export async function POST(req: Request) {
       sunsetMin,
       radiusKm,
     });
-    saveTrip(plan);
+    await saveTrip(plan);
     return NextResponse.json({ plan });
   } catch (e) {
     return NextResponse.json(

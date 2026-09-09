@@ -13,12 +13,28 @@ from models import Experience, TripPlan
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 DB_PATH = os.path.join(DATA_DIR, "roam.db")
 
-_db: Optional[aiosqlite.Connection] = None
+_db: Optional[Any] = None  # aiosqlite.Connection OR Turso HTTP connection
+_data_mode: str = "local"
 
 
-async def get_db() -> aiosqlite.Connection:
-    global _db
+def data_mode() -> str:
+    """'turso' when LIBSQL_URL is set, else 'local'."""
+    return _data_mode
+
+
+async def get_db() -> Any:
+    global _db, _data_mode
     if _db is None:
+        # Turso first: every write must reach the shared cloud DB so the
+        # Vercel frontend sees backend results. Local disk is never the only
+        # copy when LIBSQL_URL is configured.
+        if os.getenv("LIBSQL_URL"):
+            from turso import connect_turso
+
+            _db = await connect_turso()
+            _data_mode = "turso"
+            return _db
+        _data_mode = "local"
         os.makedirs(DATA_DIR, exist_ok=True)
         _db = await aiosqlite.connect(DB_PATH, timeout=30.0)
         _db.row_factory = aiosqlite.Row
@@ -117,6 +133,24 @@ async def close_db() -> None:
 async def upsert_places(city: str, places: list[Experience]) -> int:
     db = await get_db()
     n = 0
+    now_ms = int(time.time() * 1000)
+    if hasattr(db, "execute_batch"):
+        stmts = []
+        for p in places:
+            stmts.append(
+                (
+                    """INSERT INTO places (id, city, name, category, json, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at""",
+                    (p.id, city.lower(), p.name, p.category.value, p.model_dump_json(), now_ms),
+                )
+            )
+        try:
+            await db.execute_batch(stmts)
+            n = len(stmts)
+        except Exception:
+            pass
+        return n
     for p in places:
         try:
             await db.execute(

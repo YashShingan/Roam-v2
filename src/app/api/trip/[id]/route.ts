@@ -43,12 +43,12 @@ const PatchBody = z.object({
 export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await ctx.params;
-    const plan = getTrip(id);
+    const plan = await getTrip(id);
     if (!plan) return NextResponse.json({ error: "Trip not found" }, { status: 404 });
     const body = PatchBody.parse(await req.json());
     if (body.days) plan.days = body.days as never;
     if (body.voiceSummary) plan.voiceSummary = body.voiceSummary;
-    updateTrip(plan);
+    await updateTrip(plan);
     return NextResponse.json({ plan });
   } catch (e) {
     return NextResponse.json(

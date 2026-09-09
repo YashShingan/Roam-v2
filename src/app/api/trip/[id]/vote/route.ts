@@ -13,7 +13,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   try {
     const { id } = await ctx.params;
     const body = Body.parse(await req.json());
-    const votes = bumpVote(id, body.stopName, body.delta);
+    const votes = await bumpVote(id, body.stopName, body.delta);
     return NextResponse.json({ votes });
   } catch (e) {
     return NextResponse.json(

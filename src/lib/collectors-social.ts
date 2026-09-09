@@ -143,7 +143,7 @@ export async function collectReddit(ctx: GeoCtx): Promise<RawHit[]> {
         hits.push({
           id: hitId("reddit", name, ctx.city),
           name,
-          category: sourceCategory(sentence) ?? "hidden_gem",
+          category: sourceCategory(sentence),
           source: "Reddit",
           sourceUrl: t.permalink,
           note: "Community recommendation thread",
@@ -190,7 +190,7 @@ export async function collectNews(ctx: GeoCtx): Promise<RawHit[]> {
       hits.push({
         id: hitId("news", name, ctx.city),
         name,
-        category: sourceCategory(title) ?? "hidden_gem",
+        category: sourceCategory(title),
         source: "Google News",
         sourceUrl: String(it.link ?? ""),
         note: `In the news: ${String(it.source as string ?? "press")}`,
@@ -425,7 +425,7 @@ export async function collectBooks(ctx: GeoCtx): Promise<RawHit[]> {
         name,
         lat: g?.lat,
         lon: g?.lon,
-        category: sourceCategory(s.text) ?? "hidden_gem",
+        category: sourceCategory(s.text),
         source: "Public-domain books",
         sourceUrl: s.url,
         note: s.ref,
@@ -539,7 +539,7 @@ export async function collectYouTube(ctx: GeoCtx): Promise<RawHit[]> {
         hits.push({
           id: hitId("youtube", name, ctx.city),
           name,
-          category: sourceCategory(sentence) ?? sourceCategory(video.title) ?? "hidden_gem",
+          category: sourceCategory(sentence) ?? sourceCategory(video.title),
           source: "YouTube (via open proxies)",
           sourceUrl: `https://www.youtube.com/watch?v=${video.id}`,
           note: `Mentioned in “${video.title.slice(0, 60)}”`,
@@ -567,7 +567,7 @@ export async function collectYouTube(ctx: GeoCtx): Promise<RawHit[]> {
           hits.push({
             id: hitId("youtube-chapter", name, ctx.city),
             name,
-            category: sourceCategory(v.title) ?? "hidden_gem",
+            category: sourceCategory(v.title),
             source: "YouTube (via open proxies)",
             sourceUrl: `https://www.youtube.com/watch?v=${v.id}&t=${m[1].split(":").length === 3 ? m[1] : `0:${m[1]}`}`,
             note: `Chapter pick · “${v.title.slice(0, 60)}”`,

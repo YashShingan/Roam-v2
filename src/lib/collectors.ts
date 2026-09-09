@@ -10,11 +10,9 @@ let seeded = false;
 let _persistTimer: NodeJS.Timeout | null = null;
 
 export function persistHealth(): void {
-  try {
-    kvSet("health", [...healthMap.values()]);
-  } catch {
+  void kvSet("health", [...healthMap.values()]).catch(() => {
     /* non-fatal */
-  }
+  });
 }
 
 export function recordHealth(
@@ -38,11 +36,11 @@ export function recordHealth(
   }, 500);
 }
 
-export function getCollectorHealth(): HealthEntry[] {
+export async function getCollectorHealth(): Promise<HealthEntry[]> {
   if (!seeded) {
     seeded = true;
     try {
-      const prev = kvGet<HealthEntry[]>("health");
+      const prev = await kvGet<HealthEntry[]>("health");
       if (prev) for (const h of prev) if (!healthMap.has(h.name)) healthMap.set(h.name, h);
     } catch {
       /* non-fatal */
@@ -146,7 +144,7 @@ export async function runCollectors(ctx: GeoCtx): Promise<CollectorResult> {
   );
   const hits = settled.flatMap((s) => (s.status === "fulfilled" ? s.value : []));
   persistHealth();
-  return { hits, health: getCollectorHealth() };
+  return { hits, health: await getCollectorHealth() };
 }
 
 export { collectAmenityProximity };

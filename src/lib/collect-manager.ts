@@ -32,15 +32,15 @@ const running = new Map<string, Promise<CollectState>>();
 
 const stateKey = (city: string): string => `bgcollect:${city.toLowerCase()}`;
 
-export function getCollectState(city: string): CollectState | undefined {
-  const s = kvGet<CollectState>(stateKey(city));
+export async function getCollectState(city: string): Promise<CollectState | undefined> {
+  const s = await kvGet<CollectState>(stateKey(city));
   if (s?.status === "running" && Date.now() - s.startedAt > STALE_RUN_MS) return undefined;
   return s;
 }
 
 /** A run counts as fresh only if it finished recently AND found something. */
-export function isCollectFresh(city: string): boolean {
-  const s = getCollectState(city);
+export async function isCollectFresh(city: string): Promise<boolean> {
+  const s = await getCollectState(city);
   return (
     !!s &&
     s.status === "done" &&
@@ -59,37 +59,37 @@ export function startCollect(city: string, ctx: GeoCtx): Promise<CollectState> {
   return task;
 }
 
-function countStored(city: string): number {
-  return loadPlacesForCity(city, 5000).length;
+async function countStored(city: string): Promise<number> {
+  return (await loadPlacesForCity(city, 5000)).length;
 }
 
 async function runCollectTask(city: string, ctx: GeoCtx): Promise<CollectState> {
   const state: CollectState = {
     status: "running",
     startedAt: Date.now(),
-    places: countStored(city),
+    places: await countStored(city),
     added: 0,
     sourcesDone: 0,
     sourcesTotal: SOURCES_TOTAL,
   };
-  const save = (): void => {
+  const save = async (): Promise<void> => {
     try {
-      kvSet(stateKey(city), state);
+      await kvSet(stateKey(city), state);
     } catch {
       /* state persistence optional */
     }
   };
-  save();
-  const beforeIds = new Set(loadPlacesForCity(city, 5000).map((p) => p.id));
+  await save();
+  const beforeIds = new Set((await loadPlacesForCity(city, 5000)).map((p) => p.id));
 
   // Streamed from the tiled Overpass sweep: pipeline + persist partial batches
   // so users see places landing while the deep sweep is still running.
-  const ingest = (hits: RawHit[]): Experience[] => {
+  const ingest = async (hits: RawHit[]): Promise<Experience[]> => {
     const places = runPipeline(hits, ctx.label).filter((p) => isVisitablePlace(p.name, ctx.city));
     if (places.length) {
       try {
-        upsertPlaces(city, places);
-        state.places = countStored(city);
+        await upsertPlaces(city, places);
+        state.places = await countStored(city);
       } catch {
         /* db optional */
       }
@@ -97,20 +97,19 @@ async function runCollectTask(city: string, ctx: GeoCtx): Promise<CollectState> 
     return places;
   };
   ctx.onProgress = (_source, hits) => {
-    ingest(hits);
-    save();
+    void ingest(hits).then(() => save());
   };
   ctx.onSourceDone = () => {
     state.sourcesDone++;
-    save();
+    void save();
   };
 
   try {
     const { hits } = await runCollectors(ctx);
-    ingest(hits); // final merged pass — richer cross-source rows win by id
+    await ingest(hits); // final merged pass — richer cross-source rows win by id
 
     // Address backfill (Task E): bounded, keyless, Photon-first with cache.
-    const stored = loadPlacesForCity(city, 5000);
+    const stored = await loadPlacesForCity(city, 5000);
     const needAddr = stored
       .filter(
         (p) =>
@@ -126,7 +125,7 @@ async function runCollectTask(city: string, ctx: GeoCtx): Promise<CollectState> 
           if (addr) {
             p.address = addr;
             try {
-              upsertPlaces(city, [p]);
+              await upsertPlaces(city, [p]);
             } catch {
               /* db optional */
             }
@@ -137,16 +136,16 @@ async function runCollectTask(city: string, ctx: GeoCtx): Promise<CollectState> 
 
     state.status = "done";
     state.finishedAt = Date.now();
-    state.places = countStored(city);
-    state.added = loadPlacesForCity(city, 5000).filter((p) => !beforeIds.has(p.id)).length;
+    state.places = await countStored(city);
+    state.added = (await loadPlacesForCity(city, 5000)).filter((p) => !beforeIds.has(p.id)).length;
   } catch (e) {
     state.status = "error";
     state.finishedAt = Date.now();
     state.error = e instanceof Error ? e.message.slice(0, 200) : "collect failed";
   }
-  save();
+  await save();
   try {
-    kvSet(`harvest:${city.toLowerCase()}`, {
+    await kvSet(`harvest:${city.toLowerCase()}`, {
       at: Date.now(),
       stored: state.places,
       added: state.added,

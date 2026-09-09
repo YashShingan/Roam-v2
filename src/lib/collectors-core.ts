@@ -7,9 +7,13 @@ import { fetchWithTimeout, getJson, haversineKm, cached } from "./net";
 import { hitId, validCategory, type GeoCtx, type RawHit } from "./rawhit";
 
 const OVERPASS_MIRRORS = [
+  // kumi.systems first: full-planet, keyless, rarely throttled. osm.ch is
+  // LAST — it answers 200 with empty results for some regions (India), which
+  // must never masquerade as a successful tile.
+  "https://overpass.kumi.systems/api/interpreter",
   "https://overpass-api.de/api/interpreter",
-  "https://overpass.osm.ch/api/interpreter",
   "https://lz4.overpass-api.de/api/interpreter",
+  "https://overpass.osm.ch/api/interpreter",
 ];
 
 interface OsmElement {
@@ -122,8 +126,9 @@ export async function collectOverpass(ctx: GeoCtx): Promise<RawHit[]> {
     ctx.onProgress?.("OpenStreetMap", emit());
   }
 
-  if (elements.size === 0 && failed > 0) {
-    // every tile failed — one last compact attempt around the center
+  if (elements.size === 0) {
+    // every tile failed OR a mirror silently returned empty data — one last
+    // compact attempt around the center
     try {
       const q = `[out:json][timeout:6];
 (

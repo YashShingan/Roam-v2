@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { tripId } = await params;
-  const trip = getTrip(tripId);
+  const trip = await getTrip(tripId);
   return {
     title: trip ? `Trip: ${trip.cityLabel.split(",")[0]}` : "Trip not found",
     robots: { index: false },
@@ -19,7 +19,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function EmbedPage({ params }: Props) {
   const { tripId } = await params;
-  const trip = getTrip(tripId);
+  const trip = await getTrip(tripId);
 
   if (!trip) {
     return (

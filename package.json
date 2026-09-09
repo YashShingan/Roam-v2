@@ -10,9 +10,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint src",
-    "harvest": "node scripts/harvest.mjs"
+    "harvest": "node scripts/harvest.mjs",
+    "seed": "node scripts/seed.mjs"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "@tanstack/react-query": "^5.90.0",
     "compromise": "^14.14.4",
     "fast-xml-parser": "^5.2.5",

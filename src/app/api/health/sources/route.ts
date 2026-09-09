@@ -6,11 +6,11 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const city = new URL(req.url).searchParams.get("city");
-  const health = getCollectorHealth();
+  const health = await getCollectorHealth();
   return NextResponse.json({
     ok: health.every((h) => h.ok) || health.length === 0,
     collectors: health,
-    discovery: city ? (getCollectState(city) ?? null) : null,
+    discovery: city ? ((await getCollectState(city)) ?? null) : null,
     checkedAt: new Date().toISOString(),
   });
 }

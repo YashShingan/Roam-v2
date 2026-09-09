@@ -41,7 +41,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       city: geo.city,
       started: true,
-      state: getCollectState(geo.city) ?? null,
+      state: (await getCollectState(geo.city)) ?? null,
       harvestedAt: new Date().toISOString(),
     });
   } catch (e) {
@@ -58,5 +58,5 @@ export async function GET(req: Request) {
   if (!city.trim()) {
     return NextResponse.json({ error: "Missing ?city=" }, { status: 400 });
   }
-  return NextResponse.json({ city, state: getCollectState(city) ?? null });
+  return NextResponse.json({ city, state: (await getCollectState(city)) ?? null });
 }

@@ -28,6 +28,7 @@ from routes.prices import router as prices_router
 from routes.serp import router as serp_router
 from routes.images import router as images_router
 from routes.lens import router as lens_router
+from routes.jobs import router as jobs_router
 
 
 @asynccontextmanager
@@ -48,13 +49,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS from env only (comma-separated). Zero-env rule: unset → ["*"] so the
+# API still works for local dev / curl; set ALLOWED_ORIGINS in production.
+_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health")
+async def health():
+    """Platform health probe (Render health-check path). No DB dependency."""
+    from db import data_mode
+
+    return {"ok": True, "version": "1.0.0", "data_mode": data_mode()}
 
 # Mount all routes
 app.include_router(places_router, prefix="/api")
@@ -70,6 +82,7 @@ app.include_router(prices_router, prefix="/api")
 app.include_router(serp_router, prefix="/api")
 app.include_router(images_router, prefix="/api")
 app.include_router(lens_router, prefix="/api")
+app.include_router(jobs_router, prefix="/api")
 
 
 @app.get("/api/autolocate")

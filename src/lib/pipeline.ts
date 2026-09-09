@@ -147,6 +147,9 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
   const rawCity = cityLabel.split(",")[0].trim();
   const filtered = hits.filter((h) => {
     if (h.source === "Editorial deep-link") return true;
+    // text-mined hit with no coords AND no category signal → not a place
+    // (kills "City of Trees"-style NLP misfires from Reddit/News/YouTube/books)
+    if (!h.category && h.lat === undefined) return false;
     return isVisitablePlace(h.name, rawCity);
   });
 

@@ -597,7 +597,12 @@ export default function Home() {
           }
         }}
       />
-      <HealthDrawer open={healthOpen} onClose={() => setHealthOpen(false)} />
+      <HealthDrawer
+        open={healthOpen}
+        onClose={() => setHealthOpen(false)}
+        city={city}
+        onScraped={() => void placesQuery.refetch()}
+      />
       <KeyboardHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
 
       {compare.length >= 2 && view !== "grid" && <span className="sr-only">{compare.length} places queued for comparison</span>}

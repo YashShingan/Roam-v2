@@ -60,12 +60,12 @@ async function resolveGeo(city: string, opts: PlacesOptions): Promise<GeoFix | n
     return { label: opts.cityLabel, city, lat: opts.lat, lon: opts.lon };
   }
   const ck = `geofix:${city.toLowerCase()}`;
-  const hit = kvGet<GeoFix>(ck);
+  const hit = await kvGet<GeoFix>(ck);
   if (hit) return hit;
   const geo = await geocodeCity(city);
   if (!geo) return null;
   const fix: GeoFix = { label: geo.label, city: geo.city, lat: geo.lat, lon: geo.lon };
-  kvSet(ck, fix);
+  await kvSet(ck, fix);
   return fix;
 }
 
@@ -97,32 +97,32 @@ export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}
   // harvested under older/looser naming still render.
   const cityKey = geo.city.toLowerCase();
 
-  const loadStored = (): Experience[] =>
+  const loadStored = async (): Promise<Experience[]> =>
     dedupeStored(
-      [...loadPlacesForCity(cityKey, 5000), ...loadPlacesForCity(city.toLowerCase(), 5000)].filter(
+      [...(await loadPlacesForCity(cityKey, 5000)), ...(await loadPlacesForCity(city.toLowerCase(), 5000))].filter(
         (p) => isVisitablePlace(p.name, geo.city),
       ),
     );
 
   // ── render-first: serve stored rows immediately ──────────────────────────
-  let stored = loadStored();
+  let stored = await loadStored();
 
   // ── scrape-in-background: trigger when data is stale (never in the ───────
   // request path; per-city singleton, state visible across processes via kv)
   let collectPromise: Promise<CollectState> | null = null;
-  const state = getCollectState(cityKey);
-  if (!isCollectFresh(cityKey) && state?.status !== "running") {
+  const state = await getCollectState(cityKey);
+  if (!(await isCollectFresh(cityKey)) && state?.status !== "running") {
     collectPromise = startCollect(cityKey, ctx);
   }
   let pending = state?.status === "running" || !!collectPromise;
 
   if (collectPromise && opts.awaitCollect) {
     await Promise.race([collectPromise, sleep(90_000)]);
-    stored = loadStored();
-    pending = getCollectState(cityKey)?.status === "running";
+    stored = await loadStored();
+    pending = (await getCollectState(cityKey))?.status === "running";
   }
 
-  const live = getCollectState(cityKey);
+  const live = await getCollectState(cityKey);
   const collecting: CollectInfo | undefined =
     pending && live
       ? {
@@ -136,7 +136,7 @@ export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}
         }
       : undefined;
 
-  const health = getCollectorHealth();
+  const health = await getCollectorHealth();
   return {
     city: geo.city,
     cityLabel: label,

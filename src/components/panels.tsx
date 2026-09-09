@@ -9,6 +9,8 @@ import { useEffect, useState } from "react";
 import type { HealthEntry } from "@/lib/rawhit";
 import type { Experience } from "@/lib/types";
 import { useRoam } from "@/lib/store";
+import { toast } from "sonner";
+import { liveMode, pollJob, probeBackend, startLiveScrape } from "@/lib/live-backend";
 import { Button, Modal, cn } from "./ui";
 
 // ─── Scroll progress bar ─────────────────────────────────────────────────────
@@ -46,7 +48,17 @@ export function OfflineBanner() {
 }
 
 // ─── Admin health drawer (H) ────────────────────────────────────────────────
-export function HealthDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function HealthDrawer({
+  open,
+  onClose,
+  city,
+  onScraped,
+}: {
+  open: boolean;
+  onClose: () => void;
+  city?: string;
+  onScraped?: () => void;
+}) {
   const health = useQuery<{ collectors: HealthEntry[] }>({
     queryKey: ["health"],
     queryFn: async () => {
@@ -88,8 +100,81 @@ export function HealthDrawer({ open, onClose }: { open: boolean; onClose: () => 
           ))}
         </div>
         <Button className="mt-4" onClick={() => health.refetch()}>Re-check now</Button>
+        {liveMode && city && <LiveScrapePanel city={city} onScraped={onScraped} />}
       </div>
     </Modal>
+  );
+}
+
+// ─── Live scrape panel (Render backend — only when NEXT_PUBLIC_API_URL set) ──
+function LiveScrapePanel({ city, onScraped }: { city: string; onScraped?: () => void }) {
+  const [probe, setProbe] = useState<{ ok: boolean; dataMode?: string } | null>(null);
+  const [running, setRunning] = useState<string | null>(null); // job id
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void probeBackend().then((p) => alive && setProbe({ ok: p.ok, dataMode: p.dataMode }));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => {
+      void pollJob(running)
+        .then((j) => {
+          if (j.status === "running") return;
+          clearInterval(t);
+          setRunning(null);
+          if (j.status === "done") {
+            toast.success(`Live scrape done — ${j.result?.stored ?? "?"} places stored on the backend`);
+            setNote(`Last run: ${j.result?.collected ?? "?"} collected · ${j.result?.stored ?? "?"} stored`);
+            onScraped?.();
+          } else {
+            toast.error(`Live scrape failed: ${j.error ?? "unknown error"}`);
+          }
+        })
+        .catch(() => toast.error("Lost contact with the live backend — check its dashboard."));
+    }, 5000);
+    return () => clearInterval(t);
+  }, [running, onScraped]);
+
+  const run = async (): Promise<void> => {
+    try {
+      setNote("Backend is scraping — this can take a couple of minutes.");
+      const j = await startLiveScrape(city);
+      setRunning(j.job_id);
+    } catch (e) {
+      setNote(null);
+      toast.error(e instanceof Error ? e.message : "Could not start the live scrape");
+    }
+  };
+
+  return (
+    <div className="clay-raised-sm mt-4 p-4">
+      <p className="flex items-center gap-2 text-sm font-bold">
+        <span className={cn("h-2.5 w-2.5 rounded-full", probe ? (probe.ok ? "bg-emerald-500" : "bg-red-400") : "bg-amber-400 animate-pulse")} />
+        Live backend {probe?.dataMode ? `· ${probe.dataMode} DB` : ""}
+      </p>
+      <p className="mt-1 text-[12px] text-muted-foreground">
+        {probe === null
+          ? "Waking up the local data engine…"
+          : probe.ok
+            ? `Trigger a deeper on-demand scrape of ${city} on the always-on backend. Results land in the shared cloud DB.`
+            : "Backend unreachable (it may be cold-starting) — the app keeps working on cached data."}
+      </p>
+      <Button
+        variant="primary"
+        className="mt-3"
+        disabled={!!running || (probe !== null && !probe.ok)}
+        onClick={() => void run()}
+      >
+        {running ? "Scraping live…" : "Run live scrape"}
+      </Button>
+      {note && <p className="mt-2 text-[12px] text-muted-foreground">{note}</p>}
+    </div>
   );
 }
 
