@@ -1,19 +1,46 @@
 # ─── Places routes ────────────────────────────────────────────────────────────
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Query, HTTPException
 from geocode import geocode_city
-from models import GeoCtx
+from models import GeoCtx, Experience
 from collectors import run_collectors
 from pipeline import run_pipeline
 from db import upsert_places, load_places_for_city
-from net import cached
+from net import cached, haversine_km
 
 router = APIRouter()
 
 
 async def get_places_for_city(city: str, radius_km: float = 15) -> dict:
-    """Full 13-source aggregation → Experience[]."""
+    """Full 13-source aggregation → Experience[], with render-first stored DB fallback."""
+
+    # 1. Render-first: check DB for previously stored places
+    try:
+        stored = await load_places_for_city(city.lower(), 5000)
+        if stored:
+            geo = await geocode_city(city)
+            lat = geo["lat"] if geo else (stored[0].lat or 0.0)
+            lon = geo["lon"] if geo else (stored[0].lon or 0.0)
+            label = geo["label"] if geo else f"{city.title()}, India"
+            fence_km = radius_km + 4
+            filtered = [
+                p for p in stored
+                if p.lat is None or p.lon is None or haversine_km(lat, lon, p.lat, p.lon) <= fence_km
+            ]
+            if filtered:
+                return {
+                    "city": city,
+                    "cityLabel": label,
+                    "lat": lat,
+                    "lon": lon,
+                    "radiusKm": radius_km,
+                    "places": [p.model_dump() for p in filtered],
+                    "degraded": False,
+                }
+    except Exception:
+        pass
 
     async def _fetch():
         # Geocode
@@ -34,9 +61,10 @@ async def get_places_for_city(city: str, radius_km: float = 15) -> dict:
         # Pipeline
         places = run_pipeline(raw_hits, city, lat, lon)
 
-        # Enrich top places with reverse geocoded OSM addresses and directions URL
+        # Enrich top places with reverse geocoded OSM addresses and directions URL concurrently
         from geocode import reverse_geocode_address
-        for p in places[:35]:
+
+        async def _enrich(p):
             if (not p.address or p.address == "Not listed") and p.lat and p.lon:
                 try:
                     addr = await reverse_geocode_address(p.lat, p.lon)
@@ -46,6 +74,8 @@ async def get_places_for_city(city: str, radius_km: float = 15) -> dict:
                     pass
             if not p.gmapsDirectionsUrl and p.lat and p.lon:
                 p.gmapsDirectionsUrl = f"https://www.google.com/maps/dir/?api=1&destination={p.lat},{p.lon}"
+
+        await asyncio.gather(*[_enrich(p) for p in places[:10]], return_exceptions=True)
 
         # Persist to SQLite
         if places:

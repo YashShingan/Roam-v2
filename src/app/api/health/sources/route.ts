@@ -6,7 +6,7 @@ import { getDataMode } from "@/lib/db";
 export const dynamic = "force-dynamic";
 
 const ON_VERCEL = process.env.VERCEL === "1";
-const BACKEND = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+const BACKEND = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "https://roam-cmtg.onrender.com").replace(/\/$/, "");
 
 export async function GET(req: Request) {
   const city = new URL(req.url).searchParams.get("city");

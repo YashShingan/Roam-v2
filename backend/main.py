@@ -49,12 +49,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS from env only (comma-separated). Zero-env rule: unset → ["*"] so the
-# API still works for local dev / curl; set ALLOWED_ORIGINS in production.
+# CORS: allow all origins via regex so any Vercel URL (prod, preview),
+# localhost, or custom domain works without CORS headaches.
 _origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
+    allow_origin_regex=r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,6 +63,8 @@ app.add_middleware(
 
 
 @app.get("/health")
+@app.get("/health/health")
+@app.get("/api/health")
 async def health():
     """Platform health probe (Render health-check path). No DB dependency."""
     from db import data_mode

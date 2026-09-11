@@ -9,7 +9,7 @@ export const maxDuration = 60;
 // there (writable FS, no timeout). Vercel serverless can still serve from
 // Turso directly as a fallback.
 const ON_VERCEL = process.env.VERCEL === "1";
-const BACKEND = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+const BACKEND = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "https://roam-cmtg.onrender.com").replace(/\/$/, "");
 
 export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;

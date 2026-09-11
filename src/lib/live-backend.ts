@@ -2,7 +2,7 @@
 // All live-mode behavior is hidden unless NEXT_PUBLIC_API_URL is set at build
 // time. Every call: 1 retry on network error, never throws to the UI layer
 // without a caller-side catch → toast.
-export const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "https://roam-cmtg.onrender.com").replace(/\/$/, "");
 export const liveMode = API_BASE.length > 0;
 
 export interface ProbeState {
