@@ -5,10 +5,28 @@ import type { CityStats } from "@/lib/types";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+const ON_VERCEL = process.env.VERCEL === "1";
+const BACKEND = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+
 export async function GET(req: Request) {
   try {
     const city = new URL(req.url).searchParams.get("city") ?? "";
     if (!city.trim()) return NextResponse.json({ error: "Missing ?city=" }, { status: 400 });
+
+    // Proxy to Render when on Vercel
+    if (ON_VERCEL && BACKEND) {
+      try {
+        const upstream = await fetch(
+          `${BACKEND}/api/stats?city=${encodeURIComponent(city)}`,
+          { cache: "no-store", signal: AbortSignal.timeout(55_000) },
+        );
+        const data = await upstream.json();
+        return NextResponse.json(data, { status: upstream.status });
+      } catch {
+        // Render cold/down → fall through to local computation
+      }
+    }
+
     const { places, cityLabel } = await getPlacesForCity(city, {});
 
     const byCategory: Record<string, number> = {};
