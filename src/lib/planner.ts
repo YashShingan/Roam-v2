@@ -52,10 +52,14 @@ export function scorePlaces(
           ? haversineKm(req.lat, req.lon, exp.lat, exp.lon)
           : maxDist * 0.6;
       const distNorm = Math.min(dist / Math.max(radius, maxDist), 1);
+      const photoBonus = exp.imageUrl ? 0.3 : 0;
+      const descBonus = exp.description && exp.description.length > 20 ? 0.15 : 0;
       const score =
-        0.35 * Math.min(exp.popularityScore, 1) +
-        0.25 * sentimentNorm +
-        0.2 * hidden +
+        0.3 * Math.min(exp.popularityScore, 1) +
+        0.2 * sentimentNorm +
+        0.15 * hidden +
+        0.15 * photoBonus +
+        0.1 * descBonus +
         0.1 * Math.max(fit, 0) +
         0.1 * (1 - distNorm);
       return { exp, score, fit };
@@ -198,18 +202,32 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
       const end = clock + exp.durationMinutes;
       clock = end + 10; // 10-min buffer between stops
       totalPlanned += exp.durationMinutes + travelMin;
+      const startSlot = fmtSlot(start);
+      const endSlot = fmtSlot(end);
+      const startH = Math.floor(start / 60);
+
+      let timeOfDay = "afternoon";
+      if (startH < 12) timeOfDay = "morning";
+      else if (startH >= 12 && startH < 15 && exp.category === "food") timeOfDay = "lunch";
+      else if (startH >= 12 && startH < 17) timeOfDay = "afternoon";
+      else if (startH >= 17 && startH < 19) timeOfDay = "sunset";
+      else if (startH >= 19 && exp.category === "food") timeOfDay = "dinner";
+      else if (startH >= 19) timeOfDay = "evening";
+
       stops.push({
         experienceId: exp.id,
         name: exp.name,
         category: exp.category,
-        slotStart: fmtSlot(start),
-        slotEnd: fmtSlot(end),
+        slotStart: startSlot,
+        slotEnd: endSlot,
         travelMinFromPrev: travelMin,
         legGeometry: geometry,
         lat: exp.lat,
         lon: exp.lon,
         durationMinutes: exp.durationMinutes,
         pricePerPerson: exp.pricePerPerson,
+        imageUrl: exp.imageUrl,
+        timeOfDay,
         note: i === 0 ? "Start here" : `${travelMin} min walk from previous`,
       });
     }
@@ -229,6 +247,8 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
           lon: bestFood.exp.lon,
           durationMinutes: bestFood.exp.durationMinutes,
           pricePerPerson: bestFood.exp.pricePerPerson,
+          imageUrl: bestFood.exp.imageUrl,
+          timeOfDay: "lunch",
           note: "Meal anchor — best food stop near this cluster",
         });
       }

@@ -2,6 +2,7 @@
 import type { Category, Experience, SourceRef } from "./types";
 import { dedupKey, haversineKm, tokenSim, meaningfulOverlap, isBareGeoFragment } from "./net";
 import { hitId, type RawHit } from "./rawhit";
+import { extractCanonicalLandmark, isJunkPlace, sanitizeCategory } from "./intelligence";
 
 // 1 ── Transit/road filter (spec §3 exact regexes)
 const DROP_RE =
@@ -14,10 +15,11 @@ const NON_VISITABLE_RE =
   /\b(school|high\s*school|primary\s*school|secondary\s*school|convent|vidyalaya|shala|prathmik|madhyamik|kindergarten|pre-?school|nursery|playgroup|coaching|classes|tutorials|polytechnic|institute|junior\s*college|degree\s*college|college|university|vidyapeeth|campus|hostel|apartment|apartments|residency|heights|enclave|housing\s*society|co-?op\s*hsg|niwas|chawl|chambers|towers?|bungalow|villa|hospital|clinic|dispensary|pathology|diagnostic|maternity|nursing\s*home|dental|polyclinic|pharmacy|chemist|medical\s*store|bank|atm|branch|petrol\s*pump|cng\s*station|gas\s*station|service\s*station|garage|motor\s*driving|police\s*station|chowki|post\s*office|municipal\s*corporation|gram\s*panchayat|talathi|ward\s*office|court|hall\s*ticket|satta|matka|dpboss|assembly\s*constituency|constituency|vidhan\s*sabha|loco\s*shed|cantonment|tehsil\s*office|bus\s*depot|metro\s*depot|fuel\s*(?:station|pump)|filling\s*station|petrol\s*(?:pump|station)|madarsa|madrasa|\bclass\b|estates\b|developers\b)\b/i;
 
 /** Clean mined names: news/book titles leak trailing separators
- * ("Durgadi Fort -", "Gateway | Mid-Day"). Mechanical strip only — never
- * rewrites real content. */
+ * ("Durgadi Fort -", "Gateway | Mid-Day"). Also resolves photo dump names
+ * to canonical landmark entities. */
 export function normalizePlaceName(name: string): string {
-  let n = name.replace(/\s+/g, " ").trim();
+  let n = extractCanonicalLandmark(name);
+  n = n.replace(/\s+/g, " ").trim();
   n = n.replace(/[\s\-\u2013\u2014|:;,."]+$/g, "");
   n = n.replace(/^[\s\-\u2013\u2014|:;,."]+/, "");
   // curly quotes and possessive-city prefixes: "‘City of" → "City of",
@@ -26,10 +28,13 @@ export function normalizePlaceName(name: string): string {
   n = n.replace(/^[\u2018\u2019\u201C\u201D'"']+/, "");
   n = n.replace(/^(?:mumbai|pune|kalyan|thane|delhi|india)['\u2019]s\s+/i, "");
   // Wikipedia disambiguator suffixes: "Mula River (India)" → "Mula River"
-  n = n.replace(/\s+\((?:India|Maharashtra|Mumbai|Pune|Kalyan|Thane|Delhi)\)$/i, "");
-  return n.trim();
+  n = n.replace(/\s+\((?:India|Maharashtra|Mumbai|Pune|Kalyan|Thane|Delhi|Bangalore|Bengaluru)\)$/i, "");
+  return extractCanonicalLandmark(n).trim();
 }
+
 export function isVisitablePlace(name: string, city: string): boolean {
+  if (isJunkPlace(name)) return false;
+
   const n = name.trim().toLowerCase();
   const c = city.trim().toLowerCase();
 
@@ -74,10 +79,17 @@ const CAT_RULES: { re: RegExp; cat: Category }[] = [
 ];
 
 function categorize(h: RawHit): Category {
-  if (h.category) return h.category;
-  const text = `${h.name} ${h.tags?.join(" ") ?? ""}`;
-  for (const { re, cat } of CAT_RULES) if (re.test(text)) return cat;
-  return "hidden_gem";
+  let cat: Category = h.category ?? "hidden_gem";
+  if (!h.category) {
+    const text = `${h.name} ${h.tags?.join(" ") ?? ""}`;
+    for (const { re, cat: c } of CAT_RULES) {
+      if (re.test(text)) {
+        cat = c;
+        break;
+      }
+    }
+  }
+  return sanitizeCategory(cat, h.name) as Category;
 }
 
 // ── Sentiment from quote text (never fabricated — 0 when no quotes)
@@ -206,18 +218,30 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
         : null;
     let target: Cluster | null = key ? keyToCluster.get(key) ?? null : null;
     if (!target) {
+      const canonH = extractCanonicalLandmark(h.name).toLowerCase();
       const candidates = new Set<number>();
       if (key) for (const w of key.split(" ")) for (const i of tokenIndex.get(w) ?? []) candidates.add(i);
       if (cell) for (const i of gridIndex.get(cell) ?? []) candidates.add(i);
       for (const i of candidates) {
         const c2 = clusters[i];
         const sim = tokenSim(h.name, c2.primary.name);
+        const canonC2 = extractCanonicalLandmark(c2.primary.name).toLowerCase();
+        const canonSim = tokenSim(canonH, canonC2);
         const near =
           cell !== null &&
           c2.primary.lat !== undefined &&
           c2.primary.lon !== undefined &&
-          haversineKm(h.lat as number, h.lon as number, c2.primary.lat, c2.primary.lon) <= 0.12;
-        if (sim >= 85 || (near && sim >= 60)) {
+          haversineKm(h.lat as number, h.lon as number, c2.primary.lat, c2.primary.lon) <= 0.25;
+        const sameCanon =
+          canonH.length > 3 &&
+          (canonH === canonC2 || canonH.includes(canonC2) || canonC2.includes(canonH));
+
+        if (
+          sim >= 85 ||
+          canonSim >= 85 ||
+          (near && (sim >= 40 || canonSim >= 50 || sameCanon)) ||
+          (sameCanon && canonH.length > 5 && !/park|temple|garden|lake|museum/i.test(canonH))
+        ) {
           target = c2;
           break;
         }
@@ -247,8 +271,20 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
   const experiences = clusters.map((cluster): Experience => {
     const members = cluster.members;
     const primary = members.reduce((best, m) => {
-      const bl = (best.description?.length ?? 0) + (best.popularityScore ?? 0) * 100 + (best.website ? 5 : 0) + (best.lat !== undefined ? 30 : 0);
-      const ml = (m.description?.length ?? 0) + (m.popularityScore ?? 0) * 100 + (m.website ? 5 : 0) + (m.lat !== undefined ? 30 : 0);
+      const bNoise = /[\d_-]{4,}|\b(?:am|pm)\b|\(\d+\)/i.test(best.name) ? -40 : 0;
+      const mNoise = /[\d_-]{4,}|\b(?:am|pm)\b|\(\d+\)/i.test(m.name) ? -40 : 0;
+      const bl =
+        (best.description?.length ?? 0) +
+        (best.popularityScore ?? 0) * 100 +
+        (best.website ? 5 : 0) +
+        (best.lat !== undefined ? 30 : 0) +
+        bNoise;
+      const ml =
+        (m.description?.length ?? 0) +
+        (m.popularityScore ?? 0) * 100 +
+        (m.website ? 5 : 0) +
+        (m.lat !== undefined ? 30 : 0) +
+        mNoise;
       return ml > bl ? m : best;
     }, members[0]);
 
@@ -274,7 +310,7 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
     const category = categorize(primary);
     const pop = popularityText(primary);
     const bt = computeBestTime(primary, category);
-    const name = primary.name;
+    const name = extractCanonicalLandmark(primary.name) || primary.name;
     const lat = primary.lat;
     const lon = primary.lon;
 
@@ -284,7 +320,7 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
       category,
       source: sources[0]?.source ?? "OpenStreetMap",
       sources,
-      description: primary.description,
+      description: primary.description || members.map((m) => m.description).find((d) => !!d),
       lat,
       lon,
       address: primary.address ?? "Not listed",

@@ -5,6 +5,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { dedupKey, fetchWithTimeout, getJson, haversineKm, cached, meaningfulOverlap, HttpError, UA } from "./net";
 import { hitId, validCategory, type GeoCtx, type RawHit } from "./rawhit";
+import { extractCanonicalLandmark, isJunkPlace } from "./intelligence";
 
 const OVERPASS_MIRRORS = [
   // kumi.systems first: full-planet, keyless, rarely throttled. osm.ch is
@@ -676,11 +677,26 @@ export async function collectCommons(ctx: GeoCtx): Promise<RawHit[]> {
     }
   }
   const hits: RawHit[] = [];
+  const seenCanonical = new Map<string, RawHit>();
   for (const f of files) {
     const ii = infoByTitle.get(f.title)?.[0];
     if (!ii) continue;
-    const name = cleanFileName(f.title);
-    hits.push({
+    const name = extractCanonicalLandmark(cleanFileName(f.title));
+    if (isJunkPlace(name) || name.length < 3) continue;
+
+    const canonKey = name.toLowerCase();
+    const existing = seenCanonical.get(canonKey);
+    if (existing) {
+      if (!existing.imageUrl && (ii.thumburl || ii.url)) {
+        existing.imageUrl = ii.thumburl ?? ii.url;
+      }
+      if (!existing.description && ii.extmetadata?.ImageDescription?.value) {
+        existing.description = stripHtml(ii.extmetadata.ImageDescription.value).slice(0, 400);
+      }
+      continue;
+    }
+
+    const hit: RawHit = {
       id: hitId("commons", name, ctx.city),
       name,
       lat: f.lat,
@@ -692,18 +708,16 @@ export async function collectCommons(ctx: GeoCtx): Promise<RawHit[]> {
       note: "Freely-licensed community photo",
       imageUrl: ii.thumburl ?? ii.url,
       tags: ["photo"],
-    });
+    };
+    seenCanonical.set(canonKey, hit);
+    hits.push(hit);
   }
   return hits;
 }
 
 function cleanFileName(title: string): string {
-  return title
-    .replace(/^File:/i, "")
-    .replace(/\.(jpe?g|png|webp|tiff?|gif|svg)$/i, "")
-    .replaceAll("_", " ")
-    .replace(/\s*\(\d+\)\s*$/, "")
-    .trim();
+  const cleaned = extractCanonicalLandmark(title);
+  return cleaned.length > 2 ? cleaned : title.replace(/^File:/i, "").replace(/\.\w{2,4}$/, "").replaceAll("_", " ").trim();
 }
 
 function commonsCategory(name: string): RawHit["category"] {

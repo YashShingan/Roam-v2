@@ -8,6 +8,7 @@ from typing import Optional
 from models import Category, Experience, CommunitySignal, SourceRef
 from net import dedup_key, token_sim, haversine_km, hit_id
 from services.price_engine import parse_price_snippets, aggregate_price_hint
+from services.place_intelligence import extract_canonical_landmark, is_junk_place, sanitize_category
 
 # 1 ── Transit/road filter
 DROP_RE = re.compile(
@@ -27,6 +28,9 @@ NON_VISITABLE_RE = re.compile(
 
 
 def is_visitable_place(name: str, city: str) -> bool:
+    if is_junk_place(name):
+        return False
+
     n = name.strip().lower()
     c = city.strip().lower()
 
@@ -111,13 +115,16 @@ def sentiment_of(quotes: list[dict]) -> float:
 
 
 def categorize(hit: dict) -> str:
-    if hit.get("category"):
-        return hit["category"]
-    text = f"{hit.get('name', '')} {' '.join(hit.get('tags', []))}"
-    for pattern, cat in CAT_RULES:
-        if pattern.search(text):
-            return cat
-    return "hidden_gem"
+    cat = hit.get("category")
+    if not cat:
+        text = f"{hit.get('name', '')} {' '.join(hit.get('tags', []))}"
+        for pattern, c in CAT_RULES:
+            if pattern.search(text):
+                cat = c
+                break
+    if not cat:
+        cat = "hidden_gem"
+    return sanitize_category(cat, hit.get("name", ""))
 
 
 def open_now_from_hours(raw: str | None) -> bool | None:
@@ -189,6 +196,8 @@ def run_pipeline(raw_hits: list[dict], city: str, lat: float, lon: float) -> lis
 
         existing = None
         existing_key = None
+        canon_h = extract_canonical_landmark(h.get("name", "")).lower()
+
         for mk, mv in merged.items():
             # Exact key match
             if mk == key:
@@ -200,17 +209,27 @@ def run_pipeline(raw_hits: list[dict], city: str, lat: float, lon: float) -> lis
                 existing = mv
                 existing_key = mk
                 break
-            # Proximity + partial similarity
-            if (
+            # Proximity + partial similarity / canonical match
+            near = bool(
                 h.get("lat") and mv.get("lat")
-                and haversine_km(h["lat"], h.get("lon", 0), mv["lat"], mv.get("lon", 0)) <= 0.12
-                and token_sim(key, mk) >= 60
+                and haversine_km(h["lat"], h.get("lon", 0), mv["lat"], mv.get("lon", 0)) <= 0.25
+            )
+            canon_mv = extract_canonical_landmark(mv.get("name", "")).lower()
+            same_canon = len(canon_h) > 3 and (canon_h == canon_mv or canon_h in canon_mv or canon_mv in canon_h)
+
+            if (
+                (near and (token_sim(key, mk) >= 40 or same_canon))
+                or (same_canon and len(canon_h) > 5 and not re.search(r"park|temple|garden|lake|museum", canon_h))
             ):
                 existing = mv
                 existing_key = mk
                 break
 
         if existing:
+            # If current candidate has a cleaner name without photo timestamps/suffixes, adopt it
+            if re.search(r"[\d_-]{4,}|\b(?:am|pm)\b|\(\d+\)", existing.get("name", "")) and not re.search(r"[\d_-]{4,}|\b(?:am|pm)\b|\(\d+\)", h.get("name", "")):
+                existing["name"] = h.get("name", "")
+
             # Merge: union sources, keep richest
             src = existing.get("_sources", [])
             new_src = h.get("source", "")
@@ -247,7 +266,7 @@ def run_pipeline(raw_hits: list[dict], city: str, lat: float, lon: float) -> lis
     # 3 ── Build Experience objects
     experiences: list[Experience] = []
     for h in merged.values():
-        name = h.get("name", "")
+        name = extract_canonical_landmark(h.get("name", "")) or h.get("name", "")
         cat_str = categorize(h)
         try:
             cat = Category(cat_str)

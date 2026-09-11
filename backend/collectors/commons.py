@@ -7,9 +7,12 @@ from models import GeoCtx
 from net import fetch_json
 
 
+from services.place_intelligence import extract_canonical_landmark, is_junk_place
+
 async def collect_commons(ctx: GeoCtx) -> list[dict]:
     # Geosearch for images near coordinates
     hits = []
+    seen = set()
     try:
         data = await fetch_json(
             f"https://commons.wikimedia.org/w/api.php?action=query&list=geosearch"
@@ -45,10 +48,16 @@ async def collect_commons(ctx: GeoCtx) -> list[dict]:
                     if not isinstance(p, dict):
                         continue
                     ii = (p.get("imageinfo") or [{}])[0]
-                    title = p.get("title", "").replace("File:", "").replace("_", " ")
-                    title = re.sub(r"\.\w{2,4}$", "", title).strip()
-                    if not title or len(title) < 3:
+                    raw_title = p.get("title", "").replace("File:", "").replace("_", " ")
+                    raw_title = re.sub(r"\.\w{2,4}$", "", raw_title).strip()
+                    title = extract_canonical_landmark(raw_title)
+                    if not title or len(title) < 3 or is_junk_place(title):
                         continue
+
+                    canon_key = title.lower()
+                    if canon_key in seen:
+                        continue
+                    seen.add(canon_key)
 
                     # Extract GPS from metadata
                     meta = ii.get("extmetadata", {})

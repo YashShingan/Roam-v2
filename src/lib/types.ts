@@ -116,6 +116,8 @@ export interface ItineraryStop {
   locked?: boolean;
   visited?: boolean;
   gmapsDirectionsUrl?: string;
+  imageUrl?: string;
+  timeOfDay?: string;
 }
 
 export interface TripDay {
