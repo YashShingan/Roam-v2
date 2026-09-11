@@ -150,10 +150,18 @@ export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}
   // harvested under older/looser naming still render.
   const cityKey = geo.city.toLowerCase();
 
+  // Distance fence: only rows within (radius + slack) of the city center
+  // are served. Bbox-tile overshoot and geocoder drift otherwise leak
+  // neighboring-city venues into the grid (a 126 km temple is not a Kalyan
+  // place). Slack absorbs tile edges; no-coord rows stay (already gated by
+  // the story-fragment rule).
+  const FENCE_KM = radius + 4;
+  const inFence = (p: Experience): boolean =>
+    p.lat === undefined || p.lon === undefined || haversineKm(geo.lat, geo.lon, p.lat, p.lon) <= FENCE_KM;
   const loadStored = async (): Promise<Experience[]> =>
     dedupeStored(
       [...(await loadPlacesForCity(cityKey, 5000)), ...(await loadPlacesForCity(city.toLowerCase(), 5000))].filter(
-        (p) => isVisitablePlace(p.name, geo.city),
+        (p) => inFence(p) && isVisitablePlace(p.name, geo.city),
       ),
     );
 

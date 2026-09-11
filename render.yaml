@@ -1,0 +1,19 @@
+# Render Blueprint — Roam FastAPI backend
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: roam-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.4"
+      - key: LIBSQL_URL
+        sync: false          # set manually in Render dashboard
+      - key: LIBSQL_AUTH_TOKEN
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false          # comma-separated Vercel URLs

@@ -147,12 +147,16 @@ out 40;`;
 
 function buildOverpassHits(elements: OsmElement[], ctx: GeoCtx): RawHit[] {
   const hits: RawHit[] = [];
+  // bbox tiles overshoot the search circle — clamp every element to the
+  // true radius or neighboring-city venues leak into the city bucket
+  const MAX_KM = ctx.radiusKm + 2;
   for (const el of elements) {
     const t = el.tags ?? {};
     const name = t.name?.trim();
     if (!name || t.disused === "yes" || t.access === "private") continue;
     const pLat = el.lat ?? el.center?.lat;
     const pLon = el.lon ?? el.center?.lon;
+    if (pLat !== undefined && pLon !== undefined && haversineKm(ctx.lat, ctx.lon, pLat, pLon) > MAX_KM) continue;
     const isRoute = el.type === "relation" && !!t.route;
     const category = mapOsmCategory(t, name);
     if (!category && !isRoute) continue;
