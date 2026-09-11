@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { getCollectorHealth } from "@/lib/collectors";
 import { getCollectState } from "@/lib/collect-manager";
 import { getDataMode } from "@/lib/db";
+import { sanitizeApiBase } from "@/lib/live-backend";
 
 export const dynamic = "force-dynamic";
 
 const ON_VERCEL = process.env.VERCEL === "1";
-const BACKEND = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "https://roam-cmtg.onrender.com").replace(/\/$/, "");
+const BACKEND = sanitizeApiBase(process.env.API_URL || process.env.NEXT_PUBLIC_API_URL);
 
 export async function GET(req: Request) {
   const city = new URL(req.url).searchParams.get("city");

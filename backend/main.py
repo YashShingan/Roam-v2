@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from db import get_db, close_db
@@ -48,6 +48,16 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+@app.middleware("http")
+async def normalize_api_path(request: Request, call_next):
+    path = request.scope.get("path", "")
+    if path.startswith("/api/api/"):
+        request.scope["path"] = path[4:]
+    elif path == "/health/health":
+        request.scope["path"] = "/health"
+    return await call_next(request)
+
 
 # CORS: allow all origins via regex so any Vercel URL (prod, preview),
 # localhost, or custom domain works without CORS headaches.

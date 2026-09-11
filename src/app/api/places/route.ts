@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPlacesForCity } from "@/lib/places-service";
 import { parseBbox } from "@/lib/net";
+import { sanitizeApiBase } from "@/lib/live-backend";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -9,7 +10,7 @@ export const maxDuration = 60;
 // there (writable FS, no timeout). Vercel serverless can still serve from
 // Turso directly as a fallback.
 const ON_VERCEL = process.env.VERCEL === "1";
-const BACKEND = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "https://roam-cmtg.onrender.com").replace(/\/$/, "");
+const BACKEND = sanitizeApiBase(process.env.API_URL || process.env.NEXT_PUBLIC_API_URL);
 
 export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;

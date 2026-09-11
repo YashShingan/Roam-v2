@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getPlacesForCity } from "@/lib/places-service";
 import type { CityStats } from "@/lib/types";
+import { sanitizeApiBase } from "@/lib/live-backend";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const ON_VERCEL = process.env.VERCEL === "1";
-const BACKEND = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "https://roam-cmtg.onrender.com").replace(/\/$/, "");
+const BACKEND = sanitizeApiBase(process.env.API_URL || process.env.NEXT_PUBLIC_API_URL);
 
 export async function GET(req: Request) {
   try {
