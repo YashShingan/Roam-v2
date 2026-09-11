@@ -86,7 +86,7 @@ export function cacheGet<T>(key: string): T | undefined {
 }
 
 export function cacheSet(key: string, value: unknown, ttlMs = TTL_DEFAULT): void {
-  memCache.set(key, { at: Date.now(), value });
+  memCache.set(key, { at: Date.now() + (ttlMs - TTL_DEFAULT), value });
   if (memCache.size > 400) {
     const oldest = [...memCache.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, 100);
     for (const [k] of oldest) memCache.delete(k);
@@ -143,6 +143,86 @@ export function dedupKey(name: string): string {
     .trim();
 }
 
+// ─── Bare-geo fragment detector (shared by pipeline + text miners) ──────────
+// A row named exactly one of these is a mined GEOGRAPHY fragment, never a
+// venue. Possessives are handled too: "India's" → "India" → fragment, but
+// "Nando's" → "Nando" → not a geo name → kept, and "Gateway of India" is
+// never an exact match in the first place.
+const BARE_GEO_NAMES = new Set([
+  ...(
+    "india bharat hindustan asia europe africa america deccan konkan malabar coromandel " +
+    "maharashtra karnataka goa kerala rajasthan gujarat punjab haryana odisha orissa " +
+    "bihar assam jharkhand chhattisgarh uttarakhand telangana andhra himachal " +
+    "mumbai pune kalyan dombivli thane nashik nagpur aurangabad solapur " +
+    "delhi bengaluru bangalore chennai kolkata hyderabad jaipur " +
+    "varanasi kochi cochin udaipur mysuru mysore indore bhopal surat " +
+    "kanpur lucknow patna amritsar ludhiana bhubaneswar coimbatore " +
+    "noida gurgaon gurugram faridabad ghaziabad vadodara rajkot"
+  ).split(" "),
+  // multi-word phrases — split(" ") would shred these into single words
+  "new delhi", "west asia", "east asia", "south asia", "southeast asia", "central asia",
+  "middle east", "far east", "north india", "south india", "east india", "west india",
+  "central india", "northeastern india", "western ghats", "eastern ghats",
+  "uttar pradesh", "madhya pradesh", "tamil nadu", "west bengal",
+  ..."south africa russia china japan nepal sri lanka bangladesh pakistan thailand singapore malaysia indonesia dubai london paris tokyo sydney".split(" "),
+  "south africa", "sri lanka", "united states", "united kingdom", "south korea", "new zealand", "hong kong", "abu dhabi",
+  "cafe", "shop", "hotel", "city of", "town of", "park", "church", "temple", "restaurant", "bar", "store", "market", "garden", "museum", "art gallery", "navi mumbai",
+]);
+
+/** Strip a trailing possessive ('s) — "India's" → "India". */
+export function stripPossessive(name: string): string {
+  return name
+    .replace(/[\u2019']s$/i, "")
+    .trim();
+}
+
+/** True when the name is a bare geography fragment (never a venue). */
+export function isBareGeoFragment(name: string): boolean {
+  const n = stripPossessive(name)
+    .replace(/^[\u2018\u2019\u201C\u201D'"\s]+/, "")
+    .replace(/[\u2018\u2019\u201C\u201D'"\s]+$/, "")
+    .toLowerCase()
+    .replace(/[^a-z ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return n.length === 0 || BARE_GEO_NAMES.has(n);
+}
+
+// ─── Photo-title relevance (shared by collectors + pipeline) ────────────────
+// words so common in venue/file names that matching them proves nothing
+const GENERIC_TOKENS = new Set(
+  ("restaurant hotel bar cafe coffee shop store market mall mandir temple church mosque dargah " +
+    "gurudwara school college hospital bank nagar marg road street chowk park garden building " +
+    "complex apartment apartments tower towers residency heights plaza centre center hall lodge " +
+    "resort pure veg family food stall ice cream new old view view-point point gate lake hill " +
+    "beach fort palace museum city town district station junction sectors sector phase").split(" "),
+);
+
+/** Count of place-name tokens (excluding generic words AND the city's own
+ * name) found in a candidate photo/article title. Zero → no evidence the
+ * image is OF this place. */
+export function meaningfulOverlap(
+  placeName: string,
+  candidateTitle: string,
+  city?: string,
+): number {
+  const cityTokens = new Set(
+    (city ?? "")
+      .toLowerCase()
+      .split(/[^a-z]+/)
+      .filter(Boolean),
+  );
+  const stem = (w: string): string => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w);
+  const a = dedupKey(placeName)
+    .split(" ")
+    .map(stem)
+    .filter((w) => w.length > 2 && !GENERIC_TOKENS.has(w) && !cityTokens.has(w));
+  if (a.length === 0) return 0;
+  const b = new Set(dedupKey(candidateTitle).split(" ").map(stem));
+  let n = 0;
+  for (const w of a) if (b.has(w)) n++;
+  return n;
+}
 export function tokenSim(a: string, b: string): number {
   const ka = dedupKey(a);
   const kb = dedupKey(b);

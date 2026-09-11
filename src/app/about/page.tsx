@@ -45,7 +45,7 @@ export default function AboutPage() {
           <li>• Speech recognition runs in your browser (Web Speech API) or, optionally, on-device Whisper via WebGPU.</li>
           <li>• The rule-based NLU is a plain parser — transcripts are processed server-side in memory and not stored.</li>
           <li>• The opt-in WebLLM runs a small open model entirely in your browser; it works offline after download.</li>
-          <li>• No accounts, no trackers, no API keys. Saved places and trips live in your browser + this app's local SQLite.</li>
+          <li>• No accounts, no trackers, no API keys. Saved places and trips live in your browser + this app&apos;s local SQLite.</li>
         </ul>
       </section>
 

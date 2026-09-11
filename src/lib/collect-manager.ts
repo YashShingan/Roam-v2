@@ -8,6 +8,8 @@ import { runCollectors } from "./collectors";
 import { runPipeline, isVisitablePlace } from "./pipeline";
 import { loadPlacesForCity, upsertPlaces, kvGet, kvSet } from "./db";
 import { reverseGeocode } from "./geocode";
+import { commonsPlacePhoto, openversePlacePhoto, wikipediaPlacePhoto } from "./collectors-core";
+import { sleep } from "./net";
 import type { GeoCtx, RawHit } from "./rawhit";
 import type { Experience } from "./types";
 
@@ -26,7 +28,11 @@ const SOURCES_TOTAL = 13;
 const STALE_RUN_MS = 15 * 60 * 1000; // a "running" state older than this = dead process
 const FRESH_MS = 6 * 60 * 60 * 1000; // auto re-scrape window after a good run
 const ADDRESS_BACKFILL = 150; // reverse-geocode budget per run (keyless, cached)
+const PHOTO_BACKFILL = 120; // Commons geosearch budget per run (1-2 calls/place)
+const OPENVERSE_BUDGET = 20; // third chance — anonymous tier is 20 req/min, 200/day
+const OPENVERSE_PACE_MS = 3200; // stay under the per-minute ceiling
 const ENRICH_BATCH = 5;
+const PHOTO_BATCH = 4;
 
 const running = new Map<string, Promise<CollectState>>();
 
@@ -146,6 +152,53 @@ async function runCollectTask(city: string, ctx: GeoCtx): Promise<CollectState> 
           }
         }),
       );
+    }
+
+    // Photo backfill: real location imagery for rows still without one.
+    // Wikipedia lead images arrive via the collectors; this pass covers the
+    // rest through Commons geosearch at the place's own coordinates.
+    const needPhoto = stored
+      .filter((p) => !p.imageUrl && p.lat !== undefined && p.lon !== undefined)
+      .sort((a, b) => (b.popularityScore ?? 0) - (a.popularityScore ?? 0))
+      .slice(0, PHOTO_BACKFILL);
+    for (let i = 0; i < needPhoto.length; i += PHOTO_BATCH) {
+      await Promise.allSettled(
+        needPhoto.slice(i, i + PHOTO_BATCH).map(async (p) => {
+          // geographic first (titled Commons photo near the pin), then the
+          // place's Wikipedia article lead image
+          const url =
+            (await commonsPlacePhoto(p.lat as number, p.lon as number, p.name, ctx.city)) ??
+            (await wikipediaPlacePhoto(p.name, ctx.city, p.lat, p.lon));
+          if (url) {
+            p.imageUrl = url;
+            try {
+              await upsertPlaces(city, [p]);
+            } catch {
+              /* db optional */
+            }
+          }
+        }),
+      );
+    }
+
+    // third chance: Openverse for rows that Commons and Wikipedia couldn't
+    // cover — sequential + paced to respect the anonymous rate ceiling
+    const stillNoPhoto = [...stored]
+      .filter((p) => !p.imageUrl && p.lat !== undefined && p.lon !== undefined)
+      .sort((a, b) => (b.popularityScore ?? 0) - (a.popularityScore ?? 0))
+      .slice(0, OPENVERSE_BUDGET);
+    for (let i = 0; i < stillNoPhoto.length; i++) {
+      const p = stillNoPhoto[i];
+      const url = await openversePlacePhoto(p.name, ctx.city);
+      if (url) {
+        p.imageUrl = url;
+        try {
+          await upsertPlaces(city, [p]);
+        } catch {
+          /* db optional */
+        }
+      }
+      if (i < stillNoPhoto.length - 1) await sleep(OPENVERSE_PACE_MS);
     }
 
     state.status = "done";

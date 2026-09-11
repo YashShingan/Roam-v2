@@ -3,7 +3,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { Heart, Navigation, Scale } from "lucide-react";
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { openNowFromHours } from "@/lib/pipeline";
 import type { Experience, Filters } from "@/lib/types";
 import { haversineKm } from "@/lib/net";
@@ -325,6 +325,8 @@ function Badge({ children, tone }: { children: React.ReactNode; tone: "hot" | "f
   return <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold backdrop-blur-sm", tones[tone])}>{children}</span>;
 }
 
+const GRID_PAGE = 48; // big cities return 900+ places — render progressively
+
 export function PlaceGrid({
   places,
   userLoc,
@@ -336,6 +338,33 @@ export function PlaceGrid({
   onOpen: (exp: Experience) => void;
   emptyMessage?: string;
 }) {
+  const [visible, setVisible] = useState(GRID_PAGE);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const [prevPlaces, setPrevPlaces] = useState(places);
+
+  // new result set (city change, filters change) → back to the first page.
+  // Render-time reset (React's documented pattern) — no effect, no flash.
+  if (prevPlaces !== places) {
+    setPrevPlaces(places);
+    setVisible(GRID_PAGE);
+  }
+
+  useEffect(() => {
+    if (visible >= places.length) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisible((v) => Math.min(v + GRID_PAGE, places.length));
+        }
+      },
+      { rootMargin: "800px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [visible, places.length]);
+
   if (places.length === 0) {
     return (
       <div className="clay-raised mx-auto my-10 max-w-md p-8 text-center">
@@ -350,7 +379,7 @@ export function PlaceGrid({
   return (
     <motion.div layout className="grid grid-cols-1 gap-4 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 max-w-lg sm:max-w-none mx-auto sm:mx-0">
       <AnimatePresence mode="popLayout">
-        {places.map((p, i) => (
+        {places.slice(0, visible).map((p, i) => (
           <PlaceCard
             key={p.id}
             exp={p}
@@ -360,6 +389,16 @@ export function PlaceGrid({
           />
         ))}
       </AnimatePresence>
+      {visible < places.length && (
+        <div
+          ref={sentinelRef}
+          className="col-span-full flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground"
+          role="status"
+        >
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          Loading more places — {visible} of {places.length} shown
+        </div>
+      )}
     </motion.div>
   );
 }

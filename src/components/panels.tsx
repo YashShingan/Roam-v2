@@ -42,7 +42,7 @@ export function OfflineBanner() {
       className="fixed inset-x-0 top-4 z-[70] mx-auto flex w-max items-center gap-2 rounded-full bg-gold/90 px-4 py-2 text-[13px] font-bold text-black shadow-lg no-print"
       role="status"
     >
-      <WifiOff size={14} /> You're offline — showing cached places. Reconnecting…
+      <WifiOff size={14} /> You&apos;re offline — showing cached places. Reconnecting…
     </motion.div>
   );
 }

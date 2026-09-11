@@ -1,6 +1,6 @@
 // ─── Post-processing pipeline: transit filter → dedup → categorize → enrich ─
 import type { Category, Experience, SourceRef } from "./types";
-import { dedupKey, haversineKm, tokenSim } from "./net";
+import { dedupKey, haversineKm, tokenSim, meaningfulOverlap, isBareGeoFragment } from "./net";
 import { hitId, type RawHit } from "./rawhit";
 
 // 1 ── Transit/road filter (spec §3 exact regexes)
@@ -11,8 +11,24 @@ const KEEP_RE =
 
 // Strictly reject non-visitable places: schools, colleges, residential buildings, clinics, banks, etc.
 const NON_VISITABLE_RE =
-  /\b(school|high\s*school|primary\s*school|secondary\s*school|convent|vidyalaya|shala|prathmik|madhyamik|kindergarten|pre-?school|nursery|playgroup|coaching|classes|tutorials|polytechnic|institute|junior\s*college|degree\s*college|college|university|vidyapeeth|campus|hostel|apartment|apartments|residency|heights|enclave|housing\s*society|co-?op\s*hsg|niwas|chawl|chambers|towers?|bungalow|villa|hospital|clinic|dispensary|pathology|diagnostic|maternity|nursing\s*home|dental|polyclinic|pharmacy|chemist|medical\s*store|bank|atm|branch|petrol\s*pump|cng\s*station|gas\s*station|service\s*station|garage|motor\s*driving|police\s*station|chowki|post\s*office|municipal\s*corporation|gram\s*panchayat|talathi|ward\s*office|court|hall\s*ticket|satta|matka|dpboss|assembly\s*constituency|constituency|vidhan\s*sabha|loco\s*shed|cantonment|tehsil\s*office)\b/i;
+  /\b(school|high\s*school|primary\s*school|secondary\s*school|convent|vidyalaya|shala|prathmik|madhyamik|kindergarten|pre-?school|nursery|playgroup|coaching|classes|tutorials|polytechnic|institute|junior\s*college|degree\s*college|college|university|vidyapeeth|campus|hostel|apartment|apartments|residency|heights|enclave|housing\s*society|co-?op\s*hsg|niwas|chawl|chambers|towers?|bungalow|villa|hospital|clinic|dispensary|pathology|diagnostic|maternity|nursing\s*home|dental|polyclinic|pharmacy|chemist|medical\s*store|bank|atm|branch|petrol\s*pump|cng\s*station|gas\s*station|service\s*station|garage|motor\s*driving|police\s*station|chowki|post\s*office|municipal\s*corporation|gram\s*panchayat|talathi|ward\s*office|court|hall\s*ticket|satta|matka|dpboss|assembly\s*constituency|constituency|vidhan\s*sabha|loco\s*shed|cantonment|tehsil\s*office|bus\s*depot|metro\s*depot|fuel\s*(?:station|pump)|filling\s*station|petrol\s*(?:pump|station)|madarsa|madrasa|\bclass\b|estates\b|developers\b)\b/i;
 
+/** Clean mined names: news/book titles leak trailing separators
+ * ("Durgadi Fort -", "Gateway | Mid-Day"). Mechanical strip only — never
+ * rewrites real content. */
+export function normalizePlaceName(name: string): string {
+  let n = name.replace(/\s+/g, " ").trim();
+  n = n.replace(/[\s\-\u2013\u2014|:;,."]+$/g, "");
+  n = n.replace(/^[\s\-\u2013\u2014|:;,."]+/, "");
+  // curly quotes and possessive-city prefixes: "‘City of" → "City of",
+  // "Mumbai's Film City" → "Film City"
+  n = n.replace(/^[\u2018\u2019\u201C\u201D'"']+/, "");
+  n = n.replace(/^[\u2018\u2019\u201C\u201D'"']+/, "");
+  n = n.replace(/^(?:mumbai|pune|kalyan|thane|delhi|india)['\u2019]s\s+/i, "");
+  // Wikipedia disambiguator suffixes: "Mula River (India)" → "Mula River"
+  n = n.replace(/\s+\((?:India|Maharashtra|Mumbai|Pune|Kalyan|Thane|Delhi)\)$/i, "");
+  return n.trim();
+}
 export function isVisitablePlace(name: string, city: string): boolean {
   const n = name.trim().toLowerCase();
   const c = city.trim().toLowerCase();
@@ -145,11 +161,28 @@ function popularityText(h: RawHit): { note: string; score: number } {
 export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
   // 1. transit/road + non-visitable filter (no schools, colleges, apartments, city names)
   const rawCity = cityLabel.split(",")[0].trim();
+  for (const h of hits) h.name = normalizePlaceName(h.name);
   const filtered = hits.filter((h) => {
     if (h.source === "Editorial deep-link") return true;
+    // mined geography fragments ("India's", "West Asia", "Kolkata" in a
+    // Pune run) are never venues — even when a category keyword leaked in
+    // from the surrounding sentence
+    if (isBareGeoFragment(h.name)) return false;
+    // lowercase possessive fragments ("cafe's", "mani's") — never venues.
+    // Capitalized ones ("Nando's") survive unless the base is a geo name.
+    if (/[\u2019']s$/i.test(h.name) && /^[a-z]/.test(h.name)) return false;
     // text-mined hit with no coords AND no category signal → not a place
     // (kills "City of Trees"-style NLP misfires from Reddit/News/YouTube/books)
     if (!h.category && h.lat === undefined) return false;
+    // story fragments from news/book mining ("Could", "Dwemer ruins",
+    // "Pune Fort Murder") — text-mined culture/nature hits need a location;
+    // food/market/nightlife recs keep working on quotes alone
+    if (
+      h.lat === undefined &&
+      /reddit|news|youtube|books/i.test(h.source) &&
+      /^(culture|hidden_gem|nature|adventure)$/.test(h.category ?? "")
+    )
+      return false;
     return isVisitablePlace(h.name, rawCity);
   });
 
@@ -299,13 +332,17 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
 
   // 5. enrichment pass: wiki extract reuse + commons photo proximity
   const commonsShots = hits.filter((h) => h.source === "Wikimedia Commons" && h.lat !== undefined);
+
   for (const e of experiences) {
     if (e.imageUrl || e.lat === undefined || e.lon === undefined) continue;
     let best: { d: number; url: string } | null = null;
     for (const c of commonsShots) {
-      if (c.lat === undefined || c.lon === undefined) continue;
+      if (c.lat === undefined || c.lon === undefined || !c.imageUrl) continue;
+      // proximity alone proves nothing — the nearest geotagged photo is often
+      // of something else entirely. Require a name-token match too.
+      if (meaningfulOverlap(e.name, c.name, rawCity) === 0) continue;
       const d = haversineKm(e.lat, e.lon, c.lat, c.lon);
-      if (d <= 0.3 && (!best || d < best.d)) best = { d, url: c.imageUrl ?? "" };
+      if (d <= 0.5 && (!best || d < best.d)) best = { d, url: c.imageUrl };
     }
     if (best?.url) e.imageUrl = best.url;
   }
@@ -320,25 +357,42 @@ export function openNowFromHours(raw: string | undefined, now = new Date()): boo
   // Parse common OSM forms: "Mo-Sa 09:00-21:00", "24/7", "Mo-Fr 10:00-20:00; Sa 09:00-14:00"
   if (/24\/7/.test(raw)) return true;
   const dayMap: Record<string, number> = { mo: 1, tu: 2, we: 3, th: 4, fr: 5, sa: 6, su: 0 };
+  const keys = Object.keys(dayMap);
+  const expandDays = (spec: string): number[] => {
+    const out: number[] = [];
+    for (const piece of spec.split(",")) {
+      const rng = piece.trim().match(/^([A-Za-z]{2})-([A-Za-z]{2})$/);
+      if (rng) {
+        const i1 = keys.indexOf(rng[1].toLowerCase());
+        const i2 = keys.indexOf(rng[2].toLowerCase());
+        if (i1 > -1 && i2 > -1) {
+          for (let i = i1; ; i = (i + 1) % 7) {
+            out.push(dayMap[keys[i]]);
+            if (i === i2) break;
+          }
+          continue;
+        }
+      }
+      const single = dayMap[piece.trim().toLowerCase()];
+      if (single !== undefined) out.push(single);
+    }
+    return out;
+  };
   let anyRule = false;
   let open = false;
   for (const part of raw.split(";")) {
-    const m = part.trim().match(/^((?:[A-Z][a-z],?)+)?\s*(?:(\d{1,2}):(\d{2}))?\s*-\s*(?:(\d{1,2}):(\d{2}))?$/);
+    const m = part.trim().match(/^([A-Za-z,\-]*)\s*(?:(\d{1,2}):(\d{2}))?\s*-\s*(?:(\d{1,2}):(\d{2}))?$/);
     if (!m) continue;
-    const days = m[1];
-    const start = m[2] ? Number(m[2]) * 60 + Number(m[3]) : 0;
-    const end = m[4] ? Number(m[4]) * 60 + Number(m[5]) : 1440;
-    if (!days) {
+    const startMin = m[2] ? Number(m[2]) * 60 + Number(m[3]) : 0;
+    const endMin = m[4] ? Number(m[4]) * 60 + Number(m[5]) : 1440;
+    const days = m[1] ? expandDays(m[1]) : [];
+    if (days.length === 0) {
       anyRule = true;
-      if (time >= start && time <= end) open = true;
+      if (time >= startMin && time <= endMin) open = true;
       continue;
     }
-    for (const d of days.split(",")) {
-      const idx = dayMap[d.trim().toLowerCase()];
-      if (idx === undefined) continue;
-      anyRule = true;
-      if (idx === now.getDay() && time >= start && time <= end) open = true;
-    }
+    anyRule = true;
+    if (days.includes(now.getDay()) && time >= startMin && time <= endMin) open = true;
   }
   return anyRule ? open : null;
 }

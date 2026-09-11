@@ -3,7 +3,7 @@
 // ─── UI primitives: clay buttons, chips, dialogs, sheets, sliders, skeletons ─
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
-import { Component, useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useRef, useState, type ReactNode , useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 
 export const SPRING = { type: "spring", stiffness: 260, damping: 26 } as const;
@@ -197,8 +197,12 @@ export function Modal({
     };
   }, [open, onClose]);
 
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  // SSR hydration guard without setState-in-effect (React-documented pattern)
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
   if (!mounted) return null;
 
   return createPortal(

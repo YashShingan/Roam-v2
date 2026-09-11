@@ -1,9 +1,20 @@
-import { FlatCompat } from "@eslint/eslintrc";
+import coreWebVitals from "eslint-config-next/core-web-vitals";
+import typescript from "eslint-config-next/typescript";
 
-const compat = new FlatCompat({ baseDirectory: import.meta.dirname });
+// Next 16 ships eslint-config-next as native flat-config arrays — no
+// FlatCompat translation layer (whose legacy validator crashes on it).
 const eslintConfig = [
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
-  { rules: { "@typescript-eslint/no-explicit-any": "error" } },
+  ...coreWebVitals,
+  ...typescript,
+  {
+    rules: {
+      "@typescript-eslint/no-explicit-any": "error",
+      // the remaining uses are intentional one-shot syncs with external systems
+      // (URL boot hydration, navigator.onLine, dialog-close cleanup)
+      "react-hooks/set-state-in-effect": "warn",
+    },
+  },
   { ignores: ["node_modules/**", ".next/**", "data/**", "scripts/**", "public/**"] },
 ];
+
 export default eslintConfig;

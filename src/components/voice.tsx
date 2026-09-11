@@ -64,7 +64,9 @@ export function VoicePanel({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const whisperRef = useRef<{ transcribe: (audio: Float32Array) => Promise<string> } | null>(null);
   const webllmRef = useRef<{ generate: (prompt: string) => Promise<string> } | null>(null);
-  const sessionIdRef = useRef(`s_${Math.random().toString(36).slice(2, 10)}`);
+  const sessionIdRef = useRef("");
+  // lazily minted once; Math.random is impure and must not run during render
+  const sessionId = () => (sessionIdRef.current ||= `s_${Math.random().toString(36).slice(2, 10)}`);
   const listRef = useRef<HTMLDivElement>(null);
 
   const voiceLocale = lang === "hi" ? "hi-IN" : lang === "mr" ? "mr-IN" : "en-IN";
@@ -119,7 +121,7 @@ export function VoicePanel({
         const res = await fetch("/api/assistant", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript, sessionId: sessionIdRef.current, nlu: "rules" }),
+          body: JSON.stringify({ transcript, sessionId: sessionId(), nlu: "rules" }),
         });
         const data = (await res.json()) as { actions: Action[]; reply: string; nlu: string };
         setThinking(false);
@@ -137,6 +139,49 @@ export function VoicePanel({
   );
 
   // ── Web Speech listening ──────────────────────────────────────────────────
+  const startWhisperCapture = useCallback(async (): Promise<void> => {
+    try {
+      if (!whisperRef.current) {
+        setWebllmStatus("loading Whisper (first time ≈ 40 MB)…");
+        const mod = (await cdnImport("https://esm.sh/@huggingface/transformers@3.7.5")) as {
+          pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<(audio: Float32Array) => Promise<{ text: string }>>;
+        };
+        const pipe = await mod.pipeline("automatic-speech-recognition", "onnx-community/whisper-base", { dtype: "q8" });
+        whisperRef.current = { transcribe: async (audio) => (await pipe(audio)).text };
+        setWebllmStatus(null);
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((tr) => tr.stop());
+        setWebllmStatus("transcribing on-device…");
+        const blob = new Blob(chunks, { type: recorder.mimeType });
+        const ctx = new AudioContext({ sampleRate: 16000 });
+        const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+        ctx.close();
+        const audio = buf.getChannelData(0);
+        const text = await whisperRef.current!.transcribe(audio);
+        setWebllmStatus(null);
+        if (text) void submit(text);
+      };
+      recorder.start();
+      setListening(true);
+      toast.message("Recording… tap the orb again to stop.");
+      const stopWhenTapped = (): void => {
+        if (recorder.state !== "inactive") recorder.stop();
+        setListening(false);
+        window.removeEventListener("click", stopWhenTapped);
+      };
+      setTimeout(() => window.addEventListener("click", stopWhenTapped), 300);
+    } catch {
+      setWebllmStatus(null);
+      setListening(false);
+      toast.error("Whisper needs WebGPU + mic permission — falling back to text chat.");
+    }
+  }, [submit]);
+
   const startListening = useCallback((): void => {
     if ("speechSynthesis" in window) speechSynthesis.cancel(); // barge-in
     if (sttMode === "whisper") {
@@ -181,48 +226,6 @@ export function VoicePanel({
   }, []);
 
   // ── Whisper (transformers.js via WebGPU) push-to-talk fallback ────────────
-  const startWhisperCapture = useCallback(async (): Promise<void> => {
-    try {
-      if (!whisperRef.current) {
-        setWebllmStatus("loading Whisper (first time ≈ 40 MB)…");
-        const mod = (await cdnImport("https://esm.sh/@huggingface/transformers@3.7.5")) as {
-          pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<(audio: Float32Array) => Promise<{ text: string }>>;
-        };
-        const pipe = await mod.pipeline("automatic-speech-recognition", "onnx-community/whisper-base", { dtype: "q8" });
-        whisperRef.current = { transcribe: async (audio) => (await pipe(audio)).text };
-        setWebllmStatus(null);
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => chunks.push(e.data);
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((tr) => tr.stop());
-        setWebllmStatus("transcribing on-device…");
-        const blob = new Blob(chunks, { type: recorder.mimeType });
-        const ctx = new AudioContext({ sampleRate: 16000 });
-        const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
-        ctx.close();
-        const audio = buf.getChannelData(0);
-        const text = await whisperRef.current!.transcribe(audio);
-        setWebllmStatus(null);
-        if (text) void submit(text);
-      };
-      recorder.start();
-      setListening(true);
-      toast.message("Recording… tap the orb again to stop.");
-      const stopWhenTapped = (): void => {
-        if (recorder.state !== "inactive") recorder.stop();
-        setListening(false);
-        window.removeEventListener("click", stopWhenTapped);
-      };
-      setTimeout(() => window.addEventListener("click", stopWhenTapped), 300);
-    } catch {
-      setWebllmStatus(null);
-      setListening(false);
-      toast.error("Whisper needs WebGPU + mic permission — falling back to text chat.");
-    }
-  }, [submit]);
 
   // ── WebLLM opt-in loader ──────────────────────────────────────────────────
   const toggleWebllm = useCallback(async (): Promise<void> => {

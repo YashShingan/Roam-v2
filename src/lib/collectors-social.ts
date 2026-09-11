@@ -2,7 +2,7 @@
 // ─── editorial deep-links, YouTube proxy ladder. Venue mining + geocoding. ──
 import { XMLParser } from "fast-xml-parser";
 import nlp from "compromise";
-import { getJson, getText, haversineKm } from "./net";
+import { getJson, getText, haversineKm, isBareGeoFragment } from "./net";
 import { hitId, type GeoCtx, type RawHit } from "./rawhit";
 import { isVisitablePlace } from "./pipeline";
 
@@ -26,12 +26,15 @@ function properNouns(sentence: string): string[] {
     /* nlp optional */
   }
   return [...out].filter((n) => {
-    const clean = n.replace(/[.,!?;:]+$/, "");
+    // possessive fragments: "Mumbai's best cafe" mines "Mumbai's" — strip the
+    // possessive so the geo/blacklist checks see the real base
+    const clean = n.replace(/[.,!?;:]+$/, "").replace(/[\u2019']s$/i, "").trim();
     return (
       clean.length >= 3 &&
       clean.length <= 42 &&
       /[a-zA-Z]/.test(clean) &&
       !BLACKLIST.test(clean) &&
+      !isBareGeoFragment(clean) &&
       !clean.match(/^\d/)
     );
   }).map((n) => n.replace(/[.,!?;:]+$/, ""));

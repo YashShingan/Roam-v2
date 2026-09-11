@@ -3,7 +3,7 @@
 // SQLite instantly (deduped), kicks off the uncapped background scrape when
 // data is stale, and reports `pending` so the UI can poll until fresh rows
 // land. Callers that need complete data (trip planning) pass awaitCollect.
-import { dedupKey, sleep } from "./net";
+import { dedupKey, haversineKm, sleep, tokenSim } from "./net";
 import { geocodeCity } from "./geocode";
 import { kvGet, kvSet, loadPlacesForCity } from "./db";
 import { isVisitablePlace } from "./pipeline";
@@ -81,7 +81,55 @@ function dedupeStored(places: Experience[]): Experience[] {
     const cur = best.get(k);
     if (!cur || rank(p) > rank(cur)) best.set(k, p);
   }
-  return [...best.values()];
+
+  // near-dup pass: the same place survives multiple harvests under slightly
+  // different names ("Durgadi Fort" / "Durgadi Sea Fort"). Same category,
+  // strong token overlap and ≤220 m apart ⇒ one card, the stronger row wins.
+  const survivors: Experience[] = [];
+  const grid = new Map<string, Experience[]>();
+  for (const p of best.values()) {
+    if (p.lat === undefined || p.lon === undefined) {
+      survivors.push(p);
+      continue;
+    }
+    const gx = Math.round(p.lat / 0.002);
+    const gy = Math.round(p.lon / 0.002);
+    let mergedInto: Experience | null = null;
+    for (let dx = -1; dx <= 1 && !mergedInto; dx++) {
+      for (let dy = -1; dy <= 1 && !mergedInto; dy++) {
+        const cell = grid.get(`${gx + dx}:${gy + dy}`);
+        if (!cell) continue;
+        for (const q of cell) {
+          if (q.lat === undefined || q.lon === undefined) continue;
+          if (q.category !== p.category) continue;
+          if (tokenSim(p.name, q.name) >= 70 && haversineKm(p.lat, p.lon, q.lat, q.lon) <= 0.22) {
+            mergedInto = q;
+            break;
+          }
+        }
+      }
+    }
+    if (mergedInto && rank(p) > rank(mergedInto)) {
+      // the newer row is stronger — replace the survivor in place
+      mergedInto.id = p.id;
+      mergedInto.name = p.name;
+      mergedInto.category = p.category;
+      mergedInto.sources = p.sources;
+      mergedInto.description = p.description;
+      mergedInto.imageUrl = p.imageUrl ?? mergedInto.imageUrl;
+      mergedInto.address = p.address ?? mergedInto.address;
+      mergedInto.popularityScore = p.popularityScore;
+      mergedInto.popularity = p.popularity;
+      continue; // keep the updated survivor
+    }
+    if (mergedInto) continue; // weaker duplicate — drop
+    survivors.push(p);
+    const cellKey = `${gx}:${gy}`;
+    const cell = grid.get(cellKey);
+    if (cell) cell.push(p);
+    else grid.set(cellKey, [p]);
+  }
+  return survivors;
 }
 
 /** Vercel serverless: read-only FS, frozen background tasks, 60 s cap — the

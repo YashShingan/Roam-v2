@@ -12,18 +12,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
-      - run: npm run build
-      - run: |
+      - run: npm ci --no-audit --no-fund
+      - name: Harvest (uncapped scrape — runs on the runner, never inside Vercel)
+        run: |
+          npm run build
           npm run start &
-          sleep 6
+          sleep 8
           node scripts/harvest.mjs http://localhost:3000
         env:
           COLLECT_TOKEN: ${{ secrets.COLLECT_TOKEN }}
-      - name: Commit harvested SQLite
-        run: |
-          git config user.name "roam-harvester"
-          git config user.email "harvester@roam.local"
-          git add data/roam.db || true
-          git diff --cached --quiet || git commit -m "harvest: nightly place refresh [skip ci]"
-          git push || true
+      - name: Hygiene sweep
+        run: npm run clean
+      - name: Seed Turso (shared cloud DB — Vercel serves it immediately)
+        run: node scripts/seed.mjs
+        env:
+          LIBSQL_URL: ${{ secrets.LIBSQL_URL }}
+          LIBSQL_AUTH_TOKEN: ${{ secrets.LIBSQL_AUTH_TOKEN }}
+      # data/ is gitignored on purpose — cloud rows live in Turso, not in git.

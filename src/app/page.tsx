@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Activity, CalendarDays, Grid3X3, Map as MapIcon, Mic, Moon, Sun, Waves } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useTheme } from "next-themes";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState , useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import type { Action, Category, Experience, Filters, TripPlan } from "@/lib/types";
 import { useRoam } from "@/lib/store";
@@ -68,7 +68,7 @@ export default function Home() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [confettiAt, setConfettiAt] = useState<{ x: number; y: number } | null>(null);
-  const [mounted, setMounted] = useState(false);
+  // SSR hydration guard (React-documented pattern; no setState-in-effect)
 
   const saved = useRoam((s) => s.saved);
   const plan = useRoam((s) => s.plan);
@@ -77,7 +77,11 @@ export default function Home() {
   const compare = useRoam((s) => s.compare);
   const { theme, setTheme } = useTheme();
 
-  useEffect(() => setMounted(true), []);
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
 
   // ── boot: URL → lastCity → default ────────────────────────────────────────
   useEffect(() => {
@@ -234,6 +238,67 @@ export default function Home() {
     [city, setPlan],
   );
 
+  const applyStopMutation = (a: Action): void => {
+    const current = useRoam.getState().plan;
+    if (a.type === "add_stop") {
+      const target = places.find((p) => p.name.toLowerCase().includes(a.name.toLowerCase()));
+      if (!target) {
+        toast.message(`No place called “${a.name}” in the current results.`);
+        return;
+      }
+      if (!current) {
+        toast.message("Say “plan a day in {city}” first — then I can add stops.");
+        return;
+      }
+      const next: TripPlan = structuredClone(current);
+      const last = next.days[0].stops[next.days[0].stops.length - 1];
+      const [h, m] = (last?.slotEnd ?? "09:00").split(":").map(Number);
+      const start = h * 60 + m + 15;
+      const fmt = (min: number): string => `${String(Math.floor((min % 1440) / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+      next.days[0].stops.push({
+        experienceId: target.id,
+        name: target.name,
+        category: target.category,
+        slotStart: fmt(start),
+        slotEnd: fmt(start + target.durationMinutes),
+        travelMinFromPrev: 0,
+        lat: target.lat,
+        lon: target.lon,
+        durationMinutes: target.durationMinutes,
+        pricePerPerson: target.pricePerPerson,
+        note: "Added by voice",
+      });
+      setPlan(next);
+      toast.success(`${target.name} added to Day 1`);
+    }
+    if (a.type === "remove_stop" && current) {
+      const next: TripPlan = structuredClone(current);
+      let removed = false;
+      for (const d of next.days) {
+        const idx = d.stops.findIndex((s) => s.name.toLowerCase().includes(a.name.toLowerCase()));
+        if (idx >= 0) {
+          d.stops.splice(idx, 1);
+          removed = true;
+          break;
+        }
+      }
+      if (removed) {
+        setPlan(next);
+        toast.success(`Removed ${a.name}`);
+      } else toast.message(`“${a.name}” isn't in the plan.`);
+    }
+    if (a.type === "reorder" && current) {
+      const next: TripPlan = structuredClone(current);
+      const stops = next.days[0].stops;
+      const [moved] = stops.splice(Math.min(a.from, stops.length - 1), 1);
+      if (moved) {
+        stops.splice(Math.min(a.to, stops.length), 0, moved);
+        setPlan(next);
+        toast.success("Reordered");
+      }
+    }
+  };
+
   const runActions = useCallback(
     (actions: Action[], _reply: string, _nlu: string): void => {
       for (const a of actions) {
@@ -322,67 +387,6 @@ export default function Home() {
     },
     [places, plan, weatherQuery, placesQuery.data, replan, selectCity],
   );
-
-  const applyStopMutation = (a: Action): void => {
-    const current = useRoam.getState().plan;
-    if (a.type === "add_stop") {
-      const target = places.find((p) => p.name.toLowerCase().includes(a.name.toLowerCase()));
-      if (!target) {
-        toast.message(`No place called “${a.name}” in the current results.`);
-        return;
-      }
-      if (!current) {
-        toast.message("Say “plan a day in {city}” first — then I can add stops.");
-        return;
-      }
-      const next: TripPlan = structuredClone(current);
-      const last = next.days[0].stops[next.days[0].stops.length - 1];
-      const [h, m] = (last?.slotEnd ?? "09:00").split(":").map(Number);
-      const start = h * 60 + m + 15;
-      const fmt = (min: number): string => `${String(Math.floor((min % 1440) / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-      next.days[0].stops.push({
-        experienceId: target.id,
-        name: target.name,
-        category: target.category,
-        slotStart: fmt(start),
-        slotEnd: fmt(start + target.durationMinutes),
-        travelMinFromPrev: 0,
-        lat: target.lat,
-        lon: target.lon,
-        durationMinutes: target.durationMinutes,
-        pricePerPerson: target.pricePerPerson,
-        note: "Added by voice",
-      });
-      setPlan(next);
-      toast.success(`${target.name} added to Day 1`);
-    }
-    if (a.type === "remove_stop" && current) {
-      const next: TripPlan = structuredClone(current);
-      let removed = false;
-      for (const d of next.days) {
-        const idx = d.stops.findIndex((s) => s.name.toLowerCase().includes(a.name.toLowerCase()));
-        if (idx >= 0) {
-          d.stops.splice(idx, 1);
-          removed = true;
-          break;
-        }
-      }
-      if (removed) {
-        setPlan(next);
-        toast.success(`Removed ${a.name}`);
-      } else toast.message(`“${a.name}” isn't in the plan.`);
-    }
-    if (a.type === "reorder" && current) {
-      const next: TripPlan = structuredClone(current);
-      const stops = next.days[0].stops;
-      const [moved] = stops.splice(Math.min(a.from, stops.length - 1), 1);
-      if (moved) {
-        stops.splice(Math.min(a.to, stops.length), 0, moved);
-        setPlan(next);
-        toast.success("Reordered");
-      }
-    }
-  };
 
   // ── keyboard shortcuts ────────────────────────────────────────────────────
   useKeyboardShortcuts(
@@ -611,29 +615,33 @@ export default function Home() {
 }
 
 function ConfettiBurst({ x, y }: { x: number; y: number }) {
+  // random offsets are drawn once per burst and frozen — never during render
+  const [pieces] = useState(() =>
+    Array.from({ length: 26 }, (_, i) => ({
+      angle: (i / 26) * Math.PI * 2,
+      dist: 90 + Math.random() * 130,
+      spin: 260 + Math.random() * 200,
+      color: ["#D96B43", "#7A9A7B", "#D9A441", "#8C5BA8"][i % 4],
+    })),
+  );
   return (
     <div className="pointer-events-none fixed inset-0 z-[80]" aria-hidden>
-      {Array.from({ length: 26 }, (_, i) => {
-        const angle = (i / 26) * Math.PI * 2;
-        const dist = 90 + Math.random() * 130;
-        const colors = ["#D96B43", "#7A9A7B", "#D9A441", "#8C5BA8"];
-        return (
-          <motion.span
-            key={i}
-            className="absolute h-2.5 w-2.5 rounded-[3px]"
-            style={{ left: x, top: y, background: colors[i % colors.length] }}
-            initial={{ x: 0, y: 0, opacity: 1, rotate: 0, scale: 1 }}
-            animate={{
-              x: Math.cos(angle) * dist,
-              y: Math.sin(angle) * dist + 60,
-              opacity: 0,
-              rotate: 260 + Math.random() * 200,
-              scale: 0.5,
-            }}
-            transition={{ duration: 1.3, ease: "easeOut" }}
-          />
-        );
-      })}
+      {pieces.map((p, i) => (
+        <motion.span
+          key={i}
+          className="absolute h-2.5 w-2.5 rounded-[3px]"
+          style={{ left: x, top: y, background: p.color }}
+          initial={{ x: 0, y: 0, opacity: 1, rotate: 0, scale: 1 }}
+          animate={{
+            x: Math.cos(p.angle) * p.dist,
+            y: Math.sin(p.angle) * p.dist + 60,
+            opacity: 0,
+            rotate: p.spin,
+            scale: 0.5,
+          }}
+          transition={{ duration: 1.3, ease: "easeOut" }}
+        />
+      ))}
     </div>
   );
 }

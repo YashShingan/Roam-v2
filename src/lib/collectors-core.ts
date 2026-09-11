@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
-import { fetchWithTimeout, getJson, haversineKm, cached } from "./net";
+import { dedupKey, fetchWithTimeout, getJson, haversineKm, cached, meaningfulOverlap, HttpError, UA } from "./net";
 import { hitId, validCategory, type GeoCtx, type RawHit } from "./rawhit";
 
 const OVERPASS_MIRRORS = [
@@ -205,9 +205,33 @@ function buildOverpassHits(elements: OsmElement[], ctx: GeoCtx): RawHit[] {
       kids: t.kids_area ? true : null,
       osmType: el.type,
       osmId: String(el.id),
+      imageUrl: osmPhoto(t),
     });
   }
   return hits;
+}
+
+/** Mapper-attached photos on the OSM element itself: image=, image:0…=,
+ *  wikimedia_commons=. Only wikimedia-hosted URLs are used (no random-site
+ *  hotlinking); wikimedia_commons values become sized Special:FilePath URLs. */
+function osmPhoto(t: Record<string, string>): string | undefined {
+  const candidates = [t.image, t["image:0"], t["image:1"], t.photo, t["contact:photo"]];
+  for (const c of candidates) {
+    if (!c) continue;
+    try {
+      const u = new URL(c.startsWith("http") ? c : `https://${c}`);
+      if (/upload\.wikimedia\.org|commons\.wikimedia\.org|wikimedia\.org$/.test(u.hostname) || u.hostname.endsWith("wikimedia.org")) {
+        return u.toString();
+      }
+    } catch {
+      /* not a URL */
+    }
+  }
+  const wc = t.wikimedia_commons?.replace(/^File:/i, "").trim();
+  if (wc && !/^Category:/i.test(wc)) {
+    return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(wc)}?width=800`;
+  }
+  return undefined;
 }
 
 function kindNote(t: Record<string, string>): string | undefined {
@@ -305,7 +329,11 @@ export async function collectWikidata(ctx: GeoCtx): Promise<RawHit[]> {
       source: "Wikidata",
       sourceUrl: `https://www.wikidata.org/wiki/${qid}`,
       note: "Structured open knowledge graph entry",
-      imageUrl: row.img?.value ? `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(row.img.value.split("/").pop() ?? "")}?width=640` : undefined,
+      // P18 values arrive as full Special:FilePath URLs, ALREADY encoded —
+      // re-encoding produces %2520 doubles that 404. Use as-is, https + sized.
+      imageUrl: row.img?.value
+        ? row.img.value.replace(/^http:/, "https:").replace(/[?&]width=\d+/, "") + "?width=800"
+        : undefined,
       popularityScore: Math.min(sl / 40, 1),
       popularityNote: sl > 0 ? `${sl} wiki sitelinks` : undefined,
       tags: ["wikidata"],
@@ -473,6 +501,37 @@ export async function collectWikipedia(ctx: GeoCtx): Promise<RawHit[]> {
       if (e && e.length > 80) {
         hit.description = e.slice(0, 600);
         hit.tags = [...(hit.tags ?? []), "extract"];
+      }
+    }
+
+    // Lead photos for en titles (bulk prop=pageimages, 50 titles/batch) — the
+    // single best per-place image source: the article's own picture.
+    const photoByTitle = new Map<string, string>();
+    for (let i = 0; i < Math.min(enTitles.length, 300); i += 50) {
+      try {
+        const pi = await getJson<{ query?: { pages?: { title: string; thumbnail?: { source: string } }[] } }>(
+          wikiApi("en", {
+            action: "query",
+            prop: "pageimages",
+            piprop: "thumbnail",
+            pithumbsize: "800",
+            pilimit: "max",
+            titles: enTitles.slice(i, i + 50).map((t) => t.title).join("|"),
+          }),
+          { timeoutMs: 15000, retries: 0 },
+        );
+        for (const p of pi.query?.pages ?? []) {
+          if (p.thumbnail?.source) photoByTitle.set(p.title, p.thumbnail.source);
+        }
+      } catch {
+        /* pageimages optional */
+      }
+    }
+    for (const hit of all) {
+      const u = photoByTitle.get(hit.name);
+      if (u && !hit.imageUrl) {
+        hit.imageUrl = u;
+        hit.tags = [...(hit.tags ?? []), "photo"];
       }
     }
   }
@@ -872,4 +931,165 @@ export async function collectAmenityProximity(
 
 function stripHtml(s: string): string {
   return s.replaceAll(/<[^>]*>/g, "").trim();
+}
+
+// ─── Per-place photo backfill (Commons geosearch + Wikipedia article search) ─
+// A card photo must be OF that place. The nearest geotagged Commons image is
+// often something else entirely (a railway tamper next to Durgadi Fort), so a
+// candidate is only accepted when its TITLE shares a distinctive (non-generic)
+// word with the place name. No match → no photo; the emoji placeholder stays.
+const PLACE_PHOTO_JUNK =
+  /^(img|dsc|photo|picture|panorama|image|screenshot)[\s\d_-]*$/i;
+const placePhotoCache = new Map<string, string | null>();
+const wikiPhotoCache = new Map<string, string | null>();
+
+export async function commonsPlacePhoto(
+  lat: number,
+  lon: number,
+  placeName: string,
+  city?: string,
+): Promise<string | null> {
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  if (placePhotoCache.has(key)) return placePhotoCache.get(key) ?? null;
+  try {
+    const g = await getJson<{ query?: { geosearch?: { title: string; dist: number }[] } }>(
+      `https://commons.wikimedia.org/w/api.php?action=query&list=geosearch&gscoord=${lat}%7C${lon}&gsradius=250&gslimit=50&gsnamespace=6&format=json&formatversion=2`,
+      { timeoutMs: 8000, retries: 0, headers: { "Api-User-Agent": "RoamApp/1.0" } },
+    );
+    // keep geosearch (distance) order; take the FIRST candidate whose title
+    // shares a distinctive word with the place — proximity alone never wins.
+    const candidates = (g.query?.geosearch ?? [])
+      .map((f) => ({ title: f.title, clean: cleanFileName(f.title), dist: f.dist ?? 0 }))
+      .filter(
+        (f) =>
+          f.clean.length >= 4 &&
+          !PLACE_PHOTO_JUNK.test(f.clean) &&
+          meaningfulOverlap(placeName, f.clean, city) > 0,
+      );
+    if (candidates.length === 0) {
+      placePhotoCache.set(key, null);
+      return null;
+    }
+    interface PhotoInfoPage {
+      imageinfo?: { thumburl?: string; url?: string }[];
+    }
+    const info = await getJson<{ query?: { pages?: PhotoInfoPage[] } }>(
+      `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(candidates[0].title)}&prop=imageinfo&iiprop=url&iiurlwidth=800&format=json&formatversion=2`,
+      { timeoutMs: 10000, retries: 0 },
+    );
+    const pages = info.query?.pages ?? [];
+    const ii = (pages.length > 0 ? pages[0] : undefined)?.imageinfo?.[0];
+    const url = ii?.thumburl ?? ii?.url ?? null;
+    placePhotoCache.set(key, url);
+    return url;
+  } catch {
+    placePhotoCache.set(key, null);
+    return null;
+  }
+}
+
+/**
+ * Third-chance photo source: Openverse (openverse.org — CC-licensed images
+ * aggregated from Flickr etc.). Anonymous tier allows 20 req/min, 200/day,
+ * so the caller paces requests and we pause a minute on any 429.
+ */
+const openversePhotoCache = new Map<string, string | null>();
+let openversePausedUntil = 0;
+
+export async function openversePlacePhoto(name: string, city: string): Promise<string | null> {
+  const key = `${name.toLowerCase()}|${city.toLowerCase()}`;
+  if (openversePhotoCache.has(key)) return openversePhotoCache.get(key) ?? null;
+  if (Date.now() < openversePausedUntil) return null;
+  try {
+    const q = `${name} ${city.split(",")[0].trim()}`;
+    const j = await getJson<{ results?: { title?: string; thumbnail?: string; url?: string }[] }>(
+      `https://api.openverse.org/v1/images/?q=${encodeURIComponent(q)}&page_size=5&license_type=commercial`,
+      { timeoutMs: 10000, retries: 0, headers: { "User-Agent": UA } },
+    );
+    const hit = (j.results ?? []).find(
+      (r) => meaningfulOverlap(name, r.title ?? "", city) > 0 && (r.thumbnail || r.url),
+    );
+    const url = hit?.thumbnail ?? hit?.url ?? null;
+    openversePhotoCache.set(key, url);
+    return url;
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 429) {
+      openversePausedUntil = Date.now() + 60_000;
+    }
+    openversePhotoCache.set(key, null);
+    return null;
+  }
+}
+/**
+ * Second-chance photo source: find the place's Wikipedia article by name and
+ * take its lead image. Only titles sharing a distinctive (non-generic,
+ * non-city) word with the place name qualify, and when the place has coords,
+ * articles that carry their own coordinates are geo-verified — "Gajanan
+ * Maharaj Temple" must not match the same-named temple 600 km away.
+ */
+export async function wikipediaPlacePhoto(
+  name: string,
+  city: string,
+  lat?: number,
+  lon?: number,
+): Promise<string | null> {
+  const key = `${name.toLowerCase()}|${city.toLowerCase()}`;
+  if (wikiPhotoCache.has(key)) return wikiPhotoCache.get(key) ?? null;
+  try {
+    const search = await getJson<{ query?: { search?: { title: string }[] } }>(
+      wikiApi("en", {
+        action: "query",
+        list: "search",
+        srsearch: `${name} ${city}`,
+        srlimit: "5",
+        srnamespace: "0",
+      }),
+      { timeoutMs: 8000, retries: 0, headers: { "Api-User-Agent": "RoamApp/1.0" } },
+    );
+    const titles = (search.query?.search ?? [])
+      .map((s) => s.title)
+      .filter((t) => meaningfulOverlap(name, t, city) > 0)
+      .slice(0, 3);
+    if (titles.length === 0) {
+      wikiPhotoCache.set(key, null);
+      return null;
+    }
+    const pi = await getJson<{
+      query?: {
+        pages?: {
+          title: string;
+          thumbnail?: { source: string };
+          coordinates?: { lat: number; lon: number }[];
+        }[];
+      };
+    }>(
+      wikiApi("en", {
+        action: "query",
+        prop: "pageimages|coordinates",
+        piprop: "thumbnail",
+        pithumbsize: "800",
+        coprimary: "primary",
+        colimit: "max",
+        titles: titles.join("|"),
+      }),
+      { timeoutMs: 10000, retries: 0, headers: { "Api-User-Agent": "RoamApp/1.0" } },
+    );
+    const page = (pi.query?.pages ?? []).find((p) => {
+      if (!p.thumbnail?.source) return false;
+      // geo-verify: an article with its own coordinates must be AT the place
+      // (2 km — a 50 km radius let the city-level article match anywhere in
+      // the metro and put Durgadi Fort's photo on a Thane market)
+      const c = p.coordinates?.[0];
+      if (c && lat !== undefined && lon !== undefined) {
+        return haversineKm(lat, lon, c.lat, c.lon) <= 2;
+      }
+      return true;
+    });
+    const url = page?.thumbnail?.source ?? null;
+    wikiPhotoCache.set(key, url);
+    return url;
+  } catch {
+    wikiPhotoCache.set(key, null);
+    return null;
+  }
 }

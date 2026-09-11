@@ -37,6 +37,40 @@ const before = db.prepare("SELECT COUNT(*) n FROM places").get().n;
 
 // ── rule inputs ──────────────────────────────────────────────────────────────
 const JUNK_NAME = /constituency|lok sabha|vidhan sabha|loco shed|cantonment board|municipal corporation|municipal council|gram panchayat/i;
+
+// bare-geo fragments — keep in sync with src/lib/net.ts BARE_GEO_NAMES
+const BARE_GEO_NAMES = new Set(
+  (
+    "india bharat hindustan asia europe africa america deccan konkan malabar coromandel " +
+    "maharashtra karnataka goa kerala rajasthan gujarat punjab haryana odisha orissa " +
+    "bihar assam jharkhand chhattisgarh uttarakhand telangana andhra himachal " +
+    "mumbai pune kalyan dombivli thane nashik nagpur aurangabad solapur " +
+    "delhi bengaluru bangalore chennai kolkata hyderabad jaipur " +
+    "varanasi kochi cochin udaipur mysuru mysore indore bhopal surat " +
+    "kanpur lucknow patna amritsar ludhiana bhubaneswar coimbatore " +
+    "noida gurgaon gurugram faridabad ghaziabad vadodara rajkot"
+  ).split(" ").concat([
+    // multi-word phrases — split(" ") would shred these into single words
+    "new delhi", "west asia", "east asia", "south asia", "southeast asia", "central asia",
+    "middle east", "far east", "north india", "south india", "east india", "west india",
+    "central india", "northeastern india", "western ghats", "eastern ghats",
+    "uttar pradesh", "madhya pradesh", "tamil nadu", "west bengal",
+    "south africa", "russia", "china", "japan", "nepal", "sri lanka", "bangladesh", "pakistan", "thailand", "singapore", "malaysia", "indonesia", "dubai", "london", "paris", "tokyo", "sydney", "navi mumbai", "south africa", "sri lanka", "united states", "united kingdom", "south korea", "new zealand", "hong kong", "abu dhabi",
+  ]),
+  );
+const stripPossessive = (n) => n.replace(/[\u2019']s$/i, "").trim();
+const isBareGeoFragment = (name) => {
+  const n = stripPossessive(name)
+    .toLowerCase()
+    .replace(/[^a-z ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return n.length === 0 || BARE_GEO_NAMES.has(n);
+};
+
+// extend the junk-name regex with fuel stations (covers "Indian Oil Fuel
+// Filling Station" class rows)
+
 // India bounding box (Roam is India-only; stray foreign scrapes go)
 const IN_BBOX = { latMin: 6.0, latMax: 36.0, lonMin: 68.0, lonMax: 98.0 };
 // well-known geo names that are never a venue by themselves (only applied to
@@ -72,7 +106,36 @@ const rank = (j, sourcesLen) =>
   sourcesLen * 10 + (j.lat !== undefined ? 5 : 0) + (j.popularityScore ?? 0) * 10 + (j.description ? 1 : 0);
 
 // ── pass 1: row-level junk gates ─────────────────────────────────────────────
+
+
 const rows = db.prepare("SELECT id, city, name, category, json FROM places").all();
+
+// ── pass 0: name normalization (trailing/leading separators from mined titles) ─
+const normName = (n) =>
+  n
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\s\-\u2013\u2014|:;,."]+$/g, "")
+    .replace(/^[\s\-\u2013\u2014|:;,."]+/, "")
+    .trim();
+let renamed = 0;
+for (const r of rows) {
+  const n = normName(r.name ?? "");
+  if (n && n !== r.name) {
+    if (!DRY) {
+      try {
+        const j = JSON.parse(r.json);
+        j.name = n;
+        db.prepare("UPDATE places SET name = ?, json = ? WHERE id = ?").run(n, JSON.stringify(j), r.id);
+      } catch {
+        continue;
+      }
+    }
+    r.name = n;
+    renamed++;
+  }
+}
+console.log(`names normalized: ${renamed}`);
 const drop = new Map(); // id → rule
 const keep = [];
 for (const r of rows) {
@@ -89,7 +152,17 @@ for (const r of rows) {
   const hasCoords = j.lat !== undefined && j.lon !== undefined;
 
   if (name.length < 3 || !/[a-zA-Z\u0900-\u097F]/.test(name)) dropFor("tiny-name");
-  else if (JUNK_NAME.test(name)) dropFor("admin-junk-name");
+  else if (JUNK_NAME.test(name) || /fuel\s*(?:station|pump)|filling\s*station|petrol\s*(?:pump|station)/i.test(name)) dropFor("admin-junk-name");
+  else if (isBareGeoFragment(name)) dropFor("bare-geo-fragment");
+  else if (/^[\u2018\u2019\u201C\u201D'"]/.test(name) && isBareGeoFragment(name.replace(/^[\u2018\u2019\u201C\u201D'"]+/, ""))) dropFor("quote-fragment");
+  else if (/^(cafe|shop|hotel|park|church|temple|restaurant|bar|store|market|garden|museum|art gallery|city of|town of)$/i.test(name.replace(/^[‘’“”'"]+/, "").trim())) dropFor("generic-single-word");
+  else if (
+    (j.lat === undefined || j.lat === null) &&
+    /reddit|news|youtube|books/i.test(String((j.sources ?? []).map((x) => x.source).join("|"))) &&
+    /^(culture|hidden_gem|nature|adventure)$/.test(r.category ?? j.category ?? "")
+  )
+    dropFor("mined-story-fragment");
+  else if (/[\u2019']s$/i.test(name) && /^[a-z]/.test(name.trim())) dropFor("possessive-fragment");
   else if (!hasCoords && KNOWN_GEO.has(norm)) dropFor("bare-geo-name");
   else if (!hasCoords && j.category === "hidden_gem" && !j.description) dropFor("coord-less-gem");
   else if (
