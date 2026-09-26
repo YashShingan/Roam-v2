@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import { Activity, CalendarDays, Grid3X3, Map as MapIcon, Mic, Moon, Sun, Waves } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -17,6 +17,7 @@ import { PulseView } from "@/components/pulse";
 import { PlanSheet, type ReplanOptions } from "@/components/plan";
 import { CompareSheet, CompareTray } from "@/components/compare";
 import { VoicePanel } from "@/components/voice";
+import { ProviderModal } from "@/components/provider-modal";
 import { recomputePlanMetrics } from "@/lib/planner";
 import { deriveStopPriceInfo } from "@/lib/price-engine";
 import {
@@ -64,12 +65,14 @@ export default function Home() {
   const [detail, setDetail] = useState<Experience | null>(null);
   const [cityOpen, setCityOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
+  const [providerOpen, setProviderOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [healthOpen, setHealthOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [confettiAt, setConfettiAt] = useState<{ x: number; y: number } | null>(null);
+  const queryClient = useQueryClient();
   // SSR hydration guard (React-documented pattern; no setState-in-effect)
 
   const saved = useRoam((s) => s.saved);
@@ -260,6 +263,9 @@ export default function Home() {
             includeBreakfast: req.includeBreakfast,
             includeLunch: req.includeLunch,
             includeDinner: req.includeDinner,
+            persona: req.persona,
+            groupSize: req.groupSize,
+            accessibleOnly: req.accessibleOnly,
           }),
         });
         const j = (await res.json()) as { plan?: TripPlan; error?: string };
@@ -493,28 +499,55 @@ export default function Home() {
       />
 
       <div className="mx-auto max-w-6xl px-3 sm:px-6 pt-4 sm:pt-5">
-        {/* view switch */}
-        <div className="mb-4 sm:mb-5 flex w-max gap-1 sm:gap-1.5 rounded-full clay-dock p-1 sm:p-1.5 mx-auto sm:mx-0" role="tablist" aria-label="Views">
-          {(
-            [
-              ["grid", <Grid3X3 key="g" size={15} />, "Discover"],
-              ["map", <MapIcon key="m" size={15} />, "Map"],
-              ["pulse", <Waves key="p" size={15} />, "Pulse"],
-            ] as const
-          ).map(([v, icon, label]) => (
+        {/* view switch & quick actions */}
+        <div className="mb-4 sm:mb-5 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex w-max gap-1 sm:gap-1.5 rounded-full clay-dock p-1 sm:p-1.5 mx-auto sm:mx-0" role="tablist" aria-label="Views">
+            {(
+              [
+                ["grid", <Grid3X3 key="g" size={15} />, "Discover"],
+                ["map", <MapIcon key="m" size={15} />, "Map"],
+                ["pulse", <Waves key="p" size={15} />, "Pulse"],
+              ] as const
+            ).map(([v, icon, label]) => (
+              <button
+                key={v}
+                role="tab"
+                aria-selected={view === v}
+                onClick={() => setView(v)}
+                className={cn(
+                  "flex items-center gap-1 sm:gap-1.5 rounded-full px-3 sm:px-4 h-8 sm:h-9 text-[12px] sm:text-[13px] font-bold transition-all",
+                  view === v ? "clay-primary clay-primary-pressed" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {icon} {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 mx-auto sm:mx-0">
             <button
-              key={v}
-              role="tab"
-              aria-selected={view === v}
-              onClick={() => setView(v)}
-              className={cn(
-                "flex items-center gap-1 sm:gap-1.5 rounded-full px-3 sm:px-4 h-8 sm:h-9 text-[12px] sm:text-[13px] font-bold transition-all",
-                view === v ? "clay-primary clay-primary-pressed" : "text-muted-foreground hover:text-foreground",
-              )}
+              onClick={() =>
+                replan({
+                  days: 1,
+                  hoursPerDay: 2,
+                  strictCategories: false,
+                  timeMode: "capped",
+                  persona: "solo",
+                })
+              }
+              className="clay-raised-sm flex items-center gap-1.5 rounded-full px-3.5 h-8 sm:h-9 text-xs font-bold text-foreground hover:text-primary transition-all"
+              title="Quick zero-stress micro itinerary for a short 2-hour window near you"
             >
-              {icon} {label}
+              <span>⚡ 2h Micro-Trip</span>
             </button>
-          ))}
+            <button
+              onClick={() => setProviderOpen(true)}
+              className="clay-raised-sm flex items-center gap-1.5 rounded-full px-3.5 h-8 sm:h-9 text-xs font-bold text-primary hover:bg-primary/10 transition-all border border-primary/25"
+              title="List your local tours, workshops, food experiences, or view traveler demand radar"
+            >
+              <span>🌟 Host / List Experience</span>
+            </button>
+          </div>
         </div>
 
         {placesQuery.data?.pending && (
@@ -686,6 +719,15 @@ export default function Home() {
         onClose={() => setHealthOpen(false)}
         city={city}
         onScraped={() => void placesQuery.refetch()}
+      />
+      <ProviderModal
+        open={providerOpen}
+        onClose={() => setProviderOpen(false)}
+        city={city}
+        onListingCreated={() => {
+          queryClient.invalidateQueries({ queryKey: ["places", city] });
+          void placesQuery.refetch();
+        }}
       />
       <KeyboardHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
 

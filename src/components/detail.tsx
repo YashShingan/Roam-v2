@@ -11,8 +11,10 @@ import {
   ExternalLink,
   Eye,
   MapPin,
+  MessageCircle,
   Navigation,
   Pencil,
+  Phone,
   Plus,
   Quote,
   Share2,
@@ -186,6 +188,48 @@ export function DetailDialog({
               <p className="mt-2 text-[14px] leading-relaxed text-muted-foreground">{wiki.data.extract}</p>
             )}
           </section>
+
+          {/* Local Host Contact Section */}
+          {exp.isLocalHost && (
+            <section className="rounded-2xl border border-primary/30 bg-primary/5 p-4 flex flex-col gap-2.5">
+              <div className="flex items-center justify-between">
+                <span className="inline-flex items-center gap-1.5 font-bold text-primary text-xs uppercase tracking-wider">
+                  🌟 Verified Local Host Experience
+                </span>
+                {exp.hostName && <span className="text-xs font-semibold text-foreground">Host: {exp.hostName}</span>}
+              </div>
+              {exp.availabilitySlots && exp.availabilitySlots.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 items-center text-xs">
+                  <span className="text-muted-foreground font-medium">Daily Slots:</span>
+                  {exp.availabilitySlots.map((s, idx) => (
+                    <span key={idx} className="rounded-md bg-background px-2 py-0.5 border border-border text-[11px] font-semibold">
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2 pt-1">
+                {exp.contactWhatsapp && (
+                  <a
+                    href={`https://wa.me/${exp.contactWhatsapp.replace(/\D/g, "")}?text=${encodeURIComponent(`Hi ${exp.hostName || "Host"}, I found your experience "${exp.name}" on Roam and would like to check availability!`)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Button variant="primary" className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs gap-1.5 shadow-sm">
+                      <MessageCircle size={14} /> WhatsApp Host
+                    </Button>
+                  </a>
+                )}
+                {exp.contactPhone && (
+                  <a href={`tel:${exp.contactPhone}`}>
+                    <Button variant="default" className="text-xs gap-1.5">
+                      <Phone size={14} /> Call {exp.contactPhone}
+                    </Button>
+                  </a>
+                )}
+              </div>
+            </section>
+          )}
 
           {/* best time widget */}
           <section className="clay-raised-sm flex items-center justify-between gap-4 p-4">

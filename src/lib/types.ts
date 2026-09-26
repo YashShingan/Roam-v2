@@ -94,6 +94,42 @@ export interface Experience {
   driveTimeMin?: string;
   priceHint?: PriceHint | null;
   foundViaSearch?: boolean;
+  isLocalHost?: boolean;
+  hostName?: string;
+  contactWhatsapp?: string;
+  contactPhone?: string;
+  availabilitySlots?: string[];
+}
+
+export interface ProviderListing {
+  id: string;
+  city: string;
+  title: string;
+  category: Category;
+  hostName: string;
+  contactPhone?: string;
+  contactWhatsapp?: string;
+  pricePerPerson?: number;
+  durationMinutes: number;
+  maxGroupSize?: number;
+  isKidFriendly: boolean;
+  isWheelchairAccessible: boolean;
+  description: string;
+  availabilitySlots: string[];
+  imageUrl?: string;
+  address?: string;
+  lat?: number;
+  lon?: number;
+  createdAt: number;
+}
+
+export type TravelerPersona = "solo" | "couple" | "family" | "group";
+
+export interface PersonaConfig {
+  persona: TravelerPersona;
+  groupSize: number;
+  accessibleOnly?: boolean;
+  kidFriendlyOnly?: boolean;
 }
 
 export type TransportMode = "walk" | "drive";
@@ -176,6 +212,12 @@ export interface TripPlan {
   includeBreakfast?: boolean;
   includeLunch?: boolean;
   includeDinner?: boolean;
+  persona?: TravelerPersona;
+  groupSize?: number;
+  accessibleOnly?: boolean;
+  weatherAlert?: string;
+  weatherAdapted?: boolean;
+  isMicroPlan?: boolean;
 }
 
 // ─── Voice assistant ─────────────────────────────────────────────────────────

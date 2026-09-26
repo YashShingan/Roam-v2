@@ -33,6 +33,9 @@ const Body = z.object({
   includeBreakfast: z.boolean().optional(),
   includeLunch: z.boolean().optional(),
   includeDinner: z.boolean().optional(),
+  persona: z.enum(["solo", "couple", "family", "group"]).optional(),
+  groupSize: z.number().int().min(1).max(50).optional(),
+  accessibleOnly: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -76,6 +79,9 @@ export async function POST(req: Request) {
       includeBreakfast: body.includeBreakfast,
       includeLunch: body.includeLunch,
       includeDinner: body.includeDinner,
+      persona: body.persona,
+      groupSize: body.groupSize,
+      accessibleOnly: body.accessibleOnly,
     });
     await saveTrip(plan);
     return NextResponse.json({ plan });

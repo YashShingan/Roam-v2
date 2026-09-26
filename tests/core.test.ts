@@ -125,8 +125,17 @@ import {
   buildMultiStopGmapsUrl,
   durationMinutesFromKm,
   isHighExertionStop,
+  scorePlaces,
 } from "@/lib/planner";
-import type { Experience } from "@/lib/types";
+import { saveProviderListing, loadProvidersForCity } from "@/lib/db";
+import {
+  adaptPlanForWeather,
+  trimPlanForLateRunning,
+  suggestAlternativesForStop,
+  isOutdoorExperience,
+  isCoveredIndoorExperience,
+} from "@/lib/circumstance-adapter";
+import type { Experience, ProviderListing, TripPlan } from "@/lib/types";
 
 function makeExp(overrides: Partial<Experience> & { id: string; name: string; category: Experience["category"] }): Experience {
   return {
@@ -528,5 +537,315 @@ describe("Trip Planner Route Optimization & Strict Category Selection", () => {
     }
   });
 });
+
+describe("Local Provider Hub & Verified Listings", () => {
+  it("persists local provider listing and loads it for destination city", async () => {
+    const listing: ProviderListing = {
+      id: "prov-test-1",
+      city: "pune",
+      title: "Peshwai Cooking & Heritage Kitchen Walk",
+      category: "workshop",
+      hostName: "Radhika Joshi",
+      contactPhone: "+919876543210",
+      contactWhatsapp: "+919876543210",
+      pricePerPerson: 750,
+      durationMinutes: 120,
+      maxGroupSize: 8,
+      isKidFriendly: true,
+      isWheelchairAccessible: true,
+      description: "Cook traditional Maharashtrian dishes in a heritage family wada kitchen.",
+      availabilitySlots: ["10:00 AM", "04:00 PM"],
+      address: "Sadashiv Peth, Pune",
+      lat: 18.514,
+      lon: 73.849,
+      createdAt: Date.now(),
+    };
+
+    await saveProviderListing(listing);
+    const providers = await loadProvidersForCity("pune");
+    const found = providers.find((p) => p.id === "prov-test-1");
+
+    expect(found).toBeDefined();
+    expect(found?.title).toBe("Peshwai Cooking & Heritage Kitchen Walk");
+    expect(found?.hostName).toBe("Radhika Joshi");
+    expect(found?.isKidFriendly).toBe(true);
+    expect(found?.isWheelchairAccessible).toBe(true);
+    expect(found?.pricePerPerson).toBe(750);
+    expect(found?.contactWhatsapp).toBe("+919876543210");
+  });
+});
+
+describe("Traveler Personas & Wheelchair Accessibility", () => {
+  const places: Experience[] = [
+    makeExp({
+      id: "kid1",
+      name: "Kamla Nehru Children Park",
+      category: "nature",
+      goodForKids: true,
+      wheelchairAccessible: true,
+      durationMinutes: 60,
+      popularityScore: 0.8,
+    }),
+    makeExp({
+      id: "trek1",
+      name: "Rajgad Fort Hard Summit Trek",
+      category: "adventure",
+      durationMinutes: 240,
+      wheelchairAccessible: false,
+      popularityScore: 0.9,
+    }),
+    makeExp({
+      id: "club1",
+      name: "High Spirits Dance Bar",
+      category: "nightlife",
+      durationMinutes: 120,
+      wheelchairAccessible: true,
+      popularityScore: 0.85,
+    }),
+    makeExp({
+      id: "museum1",
+      name: "Tribal Heritage Museum",
+      category: "culture",
+      durationMinutes: 90,
+      wheelchairAccessible: true,
+      popularityScore: 0.75,
+    }),
+  ];
+
+  it("filters out nightlife and grueling treks for family persona, while boosting kid-friendly places", () => {
+    const familyScored = scorePlaces(places, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      days: 1,
+      hoursPerDay: 8,
+      persona: "family",
+      groupSize: 4,
+    });
+
+    const ids = familyScored.map((s) => s.exp.id);
+    expect(ids).not.toContain("club1"); // No nightlife for families
+    expect(ids).not.toContain("trek1"); // No 4h strenuous treks for families
+    expect(ids).toContain("kid1");
+    expect(ids).toContain("museum1");
+    // Kid-friendly spot should score higher than general museum
+    const kidPlaceScore = familyScored.find((s) => s.exp.id === "kid1")?.score || 0;
+    const museumScore = familyScored.find((s) => s.exp.id === "museum1")?.score || 0;
+    expect(kidPlaceScore).toBeGreaterThan(museumScore);
+  });
+
+  it("strictly excludes inaccessible venues when accessibleOnly is enabled", () => {
+    const accessiblePlaces: Experience[] = [
+      makeExp({ id: "acc1", name: "Wheelchair Ramp Art Center", category: "culture", wheelchairAccessible: true }),
+      makeExp({ id: "inacc1", name: "Steep Step Cave Shrine", category: "culture", wheelchairAccessible: false }),
+    ];
+
+    const scored = scorePlaces(accessiblePlaces, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      days: 1,
+      hoursPerDay: 8,
+      accessibleOnly: true,
+    });
+
+    const ids = scored.map((s) => s.exp.id);
+    expect(ids).toContain("acc1");
+    expect(ids).not.toContain("inacc1");
+  });
+
+  it("applies relaxed pacing buffers (+20m inter-stop) when persona is family", () => {
+    const plan: TripPlan = {
+      id: "fam-buffer-test",
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      persona: "family",
+      days: [
+        {
+          date: "2026-09-26",
+          stops: [
+            {
+              experienceId: "s1",
+              name: "Activity One",
+              category: "culture",
+              slotStart: "09:00",
+              slotEnd: "10:00",
+              durationMinutes: 60,
+              travelMinFromPrev: 0,
+            },
+            {
+              experienceId: "s2",
+              name: "Activity Two",
+              category: "nature",
+              slotStart: "10:10",
+              slotEnd: "11:10",
+              durationMinutes: 60,
+              travelMinFromPrev: 10,
+            },
+          ],
+          totalHours: 2,
+        },
+      ],
+      createdAt: "2026-09-26T00:00:00Z",
+      voiceSummary: "",
+      shareUrl: "",
+      feasibility: { ok: true, message: "OK" },
+    };
+
+    const recomputed = recomputePlanMetrics(plan, { reslot: true });
+    // Stop 1: 09:00 - 10:00.
+    // Next stop: 10:00 + travel (10m) + family buffer (20m) = 10:30 start!
+    expect(recomputed.days[0].stops[1].slotStart).toBe("10:30");
+  });
+});
+
+describe("Dynamic Circumstance Adaptation (Weather, Delays, Alternatives)", () => {
+  it("identifies outdoor vs covered indoor experiences accurately", () => {
+    expect(isOutdoorExperience({ name: "Sinhagad Fort Trek", category: "adventure" })).toBe(true);
+    expect(isOutdoorExperience({ name: "Khadakwasla Lake Viewpoint", category: "nature" })).toBe(true);
+    expect(isOutdoorExperience({ name: "City Craft Workshop", category: "workshop" })).toBe(false);
+
+    expect(isCoveredIndoorExperience(makeExp({ id: "m1", name: "Tribal Art Museum", category: "culture", isOutdoor: false }))).toBe(true);
+    expect(isCoveredIndoorExperience(makeExp({ id: "f1", name: "Goodluck Cafe", category: "food" }))).toBe(true);
+  });
+
+  it("swaps exposed outdoor stops with sheltered indoor venues during rain while preserving locked & meal stops", () => {
+    const indoorMuseum = makeExp({
+      id: "indoor-museum",
+      name: "Mahatma Phule Museum",
+      category: "culture",
+      isOutdoor: false,
+      lat: 18.525,
+      lon: 73.845,
+    });
+    const rainPlan: TripPlan = {
+      id: "rain-test",
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      days: [
+        {
+          date: "2026-09-26",
+          stops: [
+            {
+              experienceId: "outdoor-trek",
+              name: "Parvati Hill Outdoor Climb",
+              category: "nature",
+              slotStart: "09:00",
+              slotEnd: "10:30",
+              durationMinutes: 90,
+              travelMinFromPrev: 0,
+              lat: 18.498,
+              lon: 73.848,
+            },
+            {
+              experienceId: "locked-lunch",
+              name: "Shabree Thali",
+              category: "food",
+              timeOfDay: "lunch",
+              locked: true,
+              slotStart: "12:30",
+              slotEnd: "13:30",
+              durationMinutes: 60,
+              travelMinFromPrev: 15,
+              lat: 18.52,
+              lon: 73.84,
+            },
+          ],
+          totalHours: 4.5,
+        },
+      ],
+      createdAt: "",
+      voiceSummary: "",
+      shareUrl: "",
+      feasibility: { ok: true, message: "" },
+    };
+
+    const adapted = adaptPlanForWeather(rainPlan, [indoorMuseum], "rain");
+    expect(adapted.swappedCount).toBe(1);
+    expect(adapted.plan.weatherAdapted).toBe(true);
+    expect(adapted.plan.weatherAlert).toContain("rain");
+    // Parvati Hill replaced by indoor museum
+    expect(adapted.plan.days[0].stops[0].experienceId).toBe("indoor-museum");
+    // Shabree Thali (lunch & locked) untouched
+    expect(adapted.plan.days[0].stops[1].experienceId).toBe("locked-lunch");
+  });
+
+  it("recovers delay by trimming lowest-priority non-meal afternoon stop in late-running mode", () => {
+    const delayedPlan: TripPlan = {
+      id: "delay-test",
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      days: [
+        {
+          date: "2026-09-26",
+          stops: [
+            { experienceId: "s1", name: "Morning Wada", category: "culture", slotStart: "09:00", slotEnd: "10:30", durationMinutes: 90, travelMinFromPrev: 0 },
+            { experienceId: "s2", name: "Lunch Feast", category: "food", timeOfDay: "lunch", slotStart: "12:30", slotEnd: "13:30", durationMinutes: 60, travelMinFromPrev: 10 },
+            { experienceId: "s3", name: "Afternoon Souvenir Market", category: "market", slotStart: "15:00", slotEnd: "16:30", durationMinutes: 90, travelMinFromPrev: 15 },
+          ],
+          totalHours: 7.5,
+        },
+      ],
+      createdAt: "",
+      voiceSummary: "",
+      shareUrl: "",
+      feasibility: { ok: true, message: "" },
+    };
+
+    const trimmed = trimPlanForLateRunning(delayedPlan, 0, 60);
+    expect(trimmed.trimmedStopName).toBe("Afternoon Souvenir Market");
+    expect(trimmed.plan.days[0].stops.length).toBe(2);
+    expect(trimmed.plan.feasibility.message).toContain("+60m delay recovered");
+  });
+
+  it("suggests proximity-ranked smart alternatives for a stop", () => {
+    const currentStop = {
+      experienceId: "curr",
+      name: "Current Museum",
+      category: "culture" as const,
+      lat: 18.52,
+      lon: 73.85,
+      slotStart: "10:00",
+      slotEnd: "11:30",
+      durationMinutes: 90,
+      travelMinFromPrev: 0,
+    };
+
+    const pool = [
+      makeExp({ id: "close-cult", name: "Nearby Art Gallery", category: "culture", lat: 18.521, lon: 73.851, popularityScore: 0.9 }),
+      makeExp({ id: "far-cult", name: "Distant Fort", category: "culture", lat: 18.7, lon: 73.9, popularityScore: 0.8 }),
+      makeExp({ id: "close-food", name: "Nearby Cafe", category: "food", lat: 18.522, lon: 73.852, popularityScore: 0.7 }),
+    ];
+
+    const alts = suggestAlternativesForStop(currentStop, pool, 2);
+    expect(alts.length).toBe(2);
+    // Nearest culture match should be top ranked
+    expect(alts[0].id).toBe("close-cult");
+  });
+});
+
+describe("2h Micro-Trip Generator (Short Layover / Afternoon Window)", () => {
+  it("caps total stops to 2 with 1 sight and 1 tea/food stop for short 2h duration", async () => {
+    const candidatePlaces: Experience[] = [
+      makeExp({ id: "s1", name: "Shaniwar Wada", category: "culture", lat: 18.5195, lon: 73.8553, durationMinutes: 60 }),
+      makeExp({ id: "s2", name: "Aga Khan Palace", category: "culture", lat: 18.5525, lon: 73.9015, durationMinutes: 60 }),
+      makeExp({ id: "s3", name: "Pataleshwar Cave Temple", category: "culture", lat: 18.527, lon: 73.85, durationMinutes: 45 }),
+      makeExp({ id: "f1", name: "Goodluck Cafe Irani Chai", category: "food", lat: 18.518, lon: 73.842, durationMinutes: 30 }),
+    ];
+
+    const microPlan = await buildTripPlan(candidatePlaces, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      lat: 18.52,
+      lon: 73.85,
+      days: 1,
+      hoursPerDay: 2,
+    });
+
+    expect(microPlan.isMicroPlan).toBe(true);
+    expect(microPlan.days[0].stops.length).toBeLessThanOrEqual(2);
+    expect(microPlan.days[0].stops.length).toBeGreaterThanOrEqual(1);
+    expect(microPlan.days[0].stops[0].durationMinutes).toBeLessThanOrEqual(90);
+  });
+});
+
 
 

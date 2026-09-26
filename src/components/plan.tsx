@@ -35,9 +35,11 @@ import {
   CATEGORIES,
   type Category,
   type Experience,
+  type ItineraryStop,
   type StartAnchor,
   type TimeMode,
   type TransportMode,
+  type TravelerPersona,
   type TripPlan,
   type Vibe,
 } from "@/lib/types";
@@ -46,6 +48,11 @@ import { translate, type DictKey } from "@/lib/i18n";
 import { useRoam } from "@/lib/store";
 import { download, icsForPlan, planToText } from "@/lib/exports";
 import { buildMultiStopGmapsUrl, recomputePlanMetrics } from "@/lib/planner";
+import {
+  adaptPlanForWeather,
+  trimPlanForLateRunning,
+  suggestAlternativesForStop,
+} from "@/lib/circumstance-adapter";
 import { Button, Modal, Slider, cn, SPRING } from "./ui";
 import { CATEGORY_EMOJI } from "./cards";
 
@@ -86,6 +93,9 @@ export interface ReplanOptions {
   includeBreakfast?: boolean;
   includeLunch?: boolean;
   includeDinner?: boolean;
+  persona?: TravelerPersona;
+  groupSize?: number;
+  accessibleOnly?: boolean;
 }
 
 export function PlanSheet({
@@ -140,7 +150,82 @@ export function PlanSheet({
   const [includeBreakfast, setIncludeBreakfast] = useState(plan?.includeBreakfast ?? false);
   const [includeLunch, setIncludeLunch] = useState(plan?.includeLunch ?? true);
   const [includeDinner, setIncludeDinner] = useState(plan?.includeDinner ?? false);
+  const [persona, setPersona] = useState<TravelerPersona>(plan?.persona ?? "solo");
+  const [accessibleOnly, setAccessibleOnly] = useState<boolean>(plan?.accessibleOnly ?? false);
+  const [adaptingWeather, setAdaptingWeather] = useState(false);
+  const [trimmingLate, setTrimmingLate] = useState(false);
+  const [selectedAltStop, setSelectedAltStop] = useState<ItineraryStop | null>(null);
+  const [altCandidates, setAltCandidates] = useState<Experience[]>([]);
   const speakingRef = useRef(false);
+
+  const handleWeatherAdapt = (condition: "rain" | "heat") => {
+    if (!plan) return;
+    setAdaptingWeather(true);
+    try {
+      const res = adaptPlanForWeather(plan, places, condition);
+      patchPlan(res.plan);
+      toast.success(res.message);
+    } catch {
+      toast.error("Failed to adapt plan for weather");
+    } finally {
+      setAdaptingWeather(false);
+    }
+  };
+
+  const handleRunningLate = (delayMin = 60) => {
+    if (!plan) return;
+    setTrimmingLate(true);
+    try {
+      const res = trimPlanForLateRunning(plan, dayIdx, delayMin);
+      patchPlan(res.plan);
+      toast.success(
+        res.trimmedStopName
+          ? `Recovered ${delayMin}m delay by trimming ${res.trimmedStopName}`
+          : `Schedule adjusted for ${delayMin}m delay`,
+      );
+    } catch {
+      toast.error("Failed to adjust schedule");
+    } finally {
+      setTrimmingLate(false);
+    }
+  };
+
+  const handleOpenAlternatives = (stop: ItineraryStop) => {
+    setSelectedAltStop(stop);
+    const alts = suggestAlternativesForStop(stop, places, 4);
+    setAltCandidates(alts);
+  };
+
+  const handleSwapWithAlternative = (alt: Experience) => {
+    if (!plan || !selectedAltStop) return;
+    const next: TripPlan = structuredClone(plan);
+    const day = next.days[dayIdx];
+    const sIdx = day.stops.findIndex((s) => s.experienceId === selectedAltStop.experienceId);
+    if (sIdx >= 0) {
+      const old = day.stops[sIdx];
+      day.stops[sIdx] = {
+        experienceId: alt.id,
+        name: alt.name,
+        category: alt.category,
+        slotStart: old.slotStart,
+        slotEnd: old.slotEnd,
+        travelMinFromPrev: old.travelMinFromPrev,
+        durationMinutes: alt.durationMinutes || 60,
+        pricePerPerson: alt.pricePerPerson,
+        priceBasis: alt.priceHint ? "verified_quote" : "Varies on site",
+        priceMin: alt.priceHint?.min,
+        priceMax: alt.priceHint?.max,
+        lat: alt.lat,
+        lon: alt.lon,
+        imageUrl: alt.imageUrl,
+        note: `Smart substitute for ${old.name}`,
+      };
+      const updated = recomputePlanMetrics(next, { reslot: true });
+      patchPlan(updated);
+      toast.success(`Swapped ${old.name} with ${alt.name}`);
+      setSelectedAltStop(null);
+    }
+  };
 
   // Sync local categories when main grid filter changes and no custom categories set yet
   useEffect(() => {
@@ -172,6 +257,8 @@ export function PlanSheet({
       if (plan.includeBreakfast !== undefined) setIncludeBreakfast(plan.includeBreakfast);
       if (plan.includeLunch !== undefined) setIncludeLunch(plan.includeLunch);
       if (plan.includeDinner !== undefined) setIncludeDinner(plan.includeDinner);
+      if (plan.persona) setPersona(plan.persona);
+      if (plan.accessibleOnly !== undefined) setAccessibleOnly(plan.accessibleOnly);
       if (plan.startAnchor) {
         setAnchorType(plan.startAnchor.type);
         if (plan.startAnchor.placeId) setAnchorPlaceId(plan.startAnchor.placeId);
@@ -313,6 +400,8 @@ export function PlanSheet({
       includeBreakfast: overrides?.includeBreakfast ?? includeBreakfast,
       includeLunch: overrides?.includeLunch ?? includeLunch,
       includeDinner: overrides?.includeDinner ?? includeDinner,
+      persona: overrides?.persona ?? persona,
+      accessibleOnly: overrides?.accessibleOnly ?? accessibleOnly,
     });
   };
 
@@ -678,6 +767,49 @@ export function PlanSheet({
             )}
           </div>
 
+          {/* 6. Traveler Persona & Accessibility */}
+          <div className="clay-raised-sm p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-muted-foreground">
+                6. Traveler Persona &amp; Group Pacing
+              </span>
+              <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer text-foreground">
+                <input
+                  type="checkbox"
+                  checked={accessibleOnly}
+                  onChange={(e) => setAccessibleOnly(e.target.checked)}
+                  className="rounded border-border text-primary accent-primary"
+                />
+                <span>♿ Wheelchair Accessible</span>
+              </label>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 pt-1">
+              {(
+                [
+                  { id: "solo", label: "🎒 Solo", desc: "Hidden gems & culture" },
+                  { id: "couple", label: "👫 Couple", desc: "Golden hour & cafes" },
+                  { id: "family", label: "👨‍👩‍👧 Family", desc: "Kid safe & relaxed" },
+                  { id: "group", label: "👥 Group", desc: "Food & energy" },
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPersona(p.id)}
+                  className={cn(
+                    "flex flex-col items-center justify-center p-2 rounded-xl text-center transition-all border",
+                    persona === p.id
+                      ? "bg-primary/15 border-primary/40 font-bold text-foreground shadow-sm"
+                      : "bg-surface border-transparent text-muted-foreground hover:bg-surface/80",
+                  )}
+                >
+                  <span className="text-xs">{p.label}</span>
+                  <span className="text-[9px] text-muted-foreground">{p.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <Button variant="primary" className="w-full justify-center py-3 font-bold" onClick={() => triggerRouteCalculation()}>
             🗺️ Calculate Optimal Route
           </Button>
@@ -898,6 +1030,53 @@ export function PlanSheet({
         </Button>
       </div>
 
+      {/* Traveler Persona & Accessibility */}
+      <div className="space-y-2 pt-2 border-t border-border/40">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold text-muted-foreground">Traveler Persona:</span>
+          <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer text-foreground">
+            <input
+              type="checkbox"
+              checked={accessibleOnly}
+              onChange={(e) => {
+                setAccessibleOnly(e.target.checked);
+                triggerRouteCalculation({ accessibleOnly: e.target.checked });
+              }}
+              className="rounded border-border text-primary accent-primary"
+            />
+            <span>♿ Wheelchair Accessible</span>
+          </label>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+          {(
+            [
+              { id: "solo", label: "🎒 Solo", desc: "Hidden gems & culture" },
+              { id: "couple", label: "👫 Couple", desc: "Golden hour & cafes" },
+              { id: "family", label: "👨‍👩‍👧 Family", desc: "Kid safe & relaxed" },
+              { id: "group", label: "👥 Group", desc: "Food & energy" },
+            ] as const
+          ).map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => {
+                setPersona(p.id);
+                triggerRouteCalculation({ persona: p.id });
+              }}
+              className={cn(
+                "flex flex-col items-center justify-center p-2 rounded-xl text-center transition-all border",
+                persona === p.id
+                  ? "bg-primary/15 border-primary/40 font-bold text-foreground shadow-sm"
+                  : "bg-surface border-transparent text-muted-foreground hover:bg-surface/80",
+              )}
+            >
+              <span className="text-xs">{p.label}</span>
+              <span className="text-[9px] text-muted-foreground">{p.desc}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="flex flex-wrap gap-2 pt-1 border-t border-border/40">
         <Button onClick={readAloud}>
           <Volume2 size={15} /> {t("plan.readAloud")}
@@ -993,6 +1172,37 @@ export function PlanSheet({
                 </span>{" "}
                 band · {plan.budgetBand.pricedCount} of {plan.budgetBand.totalStops} stops priced ({plan.budgetBand.note})
               </span>
+            </div>
+          )}
+
+          {/* Dynamic Weather Circumstance Alert Banner & Late Running Adjuster */}
+          {plan.weatherAlert ? (
+            <div className="mt-2.5 rounded-xl bg-sky-500/15 border border-sky-500/40 p-2.5 text-xs text-sky-900 dark:text-sky-200 flex items-center justify-between gap-2">
+              <span className="font-medium">{plan.weatherAlert}</span>
+              <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider bg-sky-500/20 px-2 py-0.5 rounded-full">
+                Adapted
+              </span>
+            </div>
+          ) : (
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => handleWeatherAdapt("rain")}
+                disabled={adaptingWeather}
+                className="text-[11px] font-semibold text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1"
+                title="Automatically swap outdoor trails for covered venues if rain occurs"
+              >
+                <span>🌧️ {adaptingWeather ? "Adapting..." : "Adapt for Rain (Swap to Indoor)"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRunningLate(60)}
+                disabled={trimmingLate}
+                className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1"
+                title="Running 1 hour behind schedule? Auto-trim non-meal stop to catch up"
+              >
+                <span>⏰ {trimmingLate ? "Trimming..." : "Running 1h Late"}</span>
+              </button>
             </div>
           )}
 
@@ -1688,6 +1898,14 @@ export function PlanSheet({
                         <X size={13} />
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenAlternatives(s)}
+                      title="Activity closed or unavailable? Choose a smart substitute"
+                      className="clay-raised-sm flex h-6 w-full items-center justify-center gap-1 rounded-md text-[10px] font-bold text-primary hover:bg-primary/10 transition-colors"
+                    >
+                      <span>🔄 Alt</span>
+                    </button>
                     {plan.days.length > 1 && (
                       <div className="w-full">
                         <select
@@ -1721,6 +1939,59 @@ export function PlanSheet({
         </div>
         </div>
       </div>
+
+      {/* Instant Substitute Modal */}
+      {selectedAltStop && (
+        <Modal
+          open={!!selectedAltStop}
+          onClose={() => setSelectedAltStop(null)}
+          labelledBy="alt-substitute-title"
+        >
+          <div className="flex flex-col gap-3 p-1 max-w-lg mx-auto text-xs">
+            <h3 id="alt-substitute-title" className="font-bold text-base text-foreground">
+              🔄 Find Substitute for {selectedAltStop.name}
+            </h3>
+            <p className="text-muted-foreground text-[11px]">
+              If <strong>{selectedAltStop.name}</strong> is closed, crowded, or unavailable, choose a nearby substitute matching the same category &amp; vicinity:
+            </p>
+            <div className="flex flex-col gap-2 max-h-80 overflow-y-auto thin-scroll">
+              {altCandidates.length === 0 ? (
+                <p className="text-muted-foreground py-4 text-center">No immediate alternatives found nearby.</p>
+              ) : (
+                altCandidates.map((alt) => (
+                  <div
+                    key={alt.id}
+                    className="clay-raised-sm rounded-xl p-3 flex items-center justify-between gap-3 border border-border/50 hover:border-primary/50 transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <h4 className="font-bold text-foreground text-xs truncate">
+                        {CATEGORY_EMOJI[alt.category]} {alt.name}
+                      </h4>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">
+                        {alt.description || alt.address}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
+                        <span>⏱️ {alt.durationMinutes}m</span>
+                        <span>·</span>
+                        <span>{alt.pricePerPerson !== undefined ? `~₹${alt.pricePerPerson} pp` : "Varies on site"}</span>
+                        {alt.community.hiddenGem && <span className="text-emerald-600 font-semibold">🌿 gem</span>}
+                      </div>
+                    </div>
+                    <Button size="sm" variant="primary" onClick={() => handleSwapWithAlternative(alt)}>
+                      Swap In
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex justify-end pt-1">
+              <Button variant="default" onClick={() => setSelectedAltStop(null)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </Modal>
   );
 }

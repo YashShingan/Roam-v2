@@ -6,6 +6,7 @@ import type {
   StartAnchor,
   TimeMode,
   TransportMode,
+  TravelerPersona,
   TripDay,
   TripPlan,
   Vibe,
@@ -36,6 +37,9 @@ export interface PlanRequest {
   includeBreakfast?: boolean;
   includeLunch?: boolean;
   includeDinner?: boolean;
+  persona?: TravelerPersona;
+  groupSize?: number;
+  accessibleOnly?: boolean;
 }
 
 export interface ScoredPlace {
@@ -66,6 +70,16 @@ export function scorePlaces(
     heritage: ["culture", "hidden_gem", "market"],
   };
   return places
+    .filter((exp) => {
+      // Accessibility hard constraint
+      if (req.accessibleOnly && exp.wheelchairAccessible === false) return false;
+      // Family safety constraint: no nightlife, no grueling treks
+      if (req.persona === "family") {
+        if (exp.category === "nightlife") return false;
+        if (isHighExertionStop(exp)) return false;
+      }
+      return true;
+    })
     .map((exp): ScoredPlace => {
       const sentimentNorm = exp.community.sentiment === 0 ? 0.5 : (exp.community.sentiment + 1) / 2;
       const hidden = exp.community.hiddenGem ? 1 : 0;
@@ -75,6 +89,23 @@ export function scorePlaces(
       if (req.vibe === "chill" && exp.durationMinutes > 150) fit -= 0.3;
       const effPrice = exp.priceHint?.min ?? (exp.priceIsEstimate ? undefined : exp.pricePerPerson);
       if (req.budget && effPrice !== undefined && effPrice > req.budget) fit -= 0.6;
+
+      // Persona preference adjustments
+      if (req.persona === "family") {
+        if (exp.goodForKids === true) fit += 0.35;
+        if (exp.category === "nature" || exp.category === "workshop" || exp.category === "food") fit += 0.15;
+      } else if (req.persona === "couple") {
+        if (exp.goldenHour || exp.category === "nature" || exp.category === "culture") fit += 0.25;
+      } else if (req.persona === "solo") {
+        if (exp.community.hiddenGem || exp.category === "workshop" || exp.category === "culture") fit += 0.3;
+      } else if (req.persona === "group") {
+        if (exp.category === "market" || exp.category === "food" || exp.category === "adventure") fit += 0.25;
+      }
+
+      if (req.accessibleOnly && exp.wheelchairAccessible === true) {
+        fit += 0.3;
+      }
+
       const dist =
         exp.lat !== undefined && exp.lon !== undefined && (anchorLat !== 0 || anchorLon !== 0)
           ? haversineKm(anchorLat, anchorLon, exp.lat, exp.lon)
@@ -387,8 +418,9 @@ export function recomputePlanMetrics(
         clock += s.travelMinFromPrev;
         const start = clock;
         const end = clock + (s.durationMinutes || 60);
-        // Human stamina: 45-min recovery & chai buffer after high-exertion treks, 10-min standard buffer otherwise
-        const recoveryBuffer = s.isHighExertion ? 45 : 10;
+        // Human stamina: 45-min recovery & chai buffer after high-exertion treks, 20-min relaxed buffer for families, 10-min standard buffer otherwise
+        const standardBuffer = next.persona === "family" ? 20 : 10;
+        const recoveryBuffer = s.isHighExertion ? 45 : standardBuffer;
         clock = end + recoveryBuffer;
         s.slotStart = fmtSlot(start);
         s.slotEnd = fmtSlot(end);
@@ -516,8 +548,9 @@ export function recomputePlanMetrics(
         : `Estimated spend between ₹${Intl.NumberFormat("en-IN").format(minSum)} and ₹${Intl.NumberFormat("en-IN").format(maxSum)} per person.`
       : `Prices vary across these stops.`;
 
+  const cityDisplayName = (next.cityLabel || next.city || "your destination").split(",")[0];
   next.voiceSummary = [
-    `Here is your ${next.days.length}-day ${mode === "drive" ? "driving" : "walking"} route for ${next.cityLabel.split(",")[0]}.`,
+    `Here is your ${next.days.length}-day ${mode === "drive" ? "driving" : "walking"} route for ${cityDisplayName}.`,
     ...next.days.map((d, i) => {
       const list = d.stops
         .slice(0, 5)
@@ -534,12 +567,13 @@ export function recomputePlanMetrics(
 export async function buildTripPlan(places: Experience[], req: PlanRequest): Promise<TripPlan> {
   const mode: TransportMode = req.transportMode ?? "walk";
   const timeMode: TimeMode = req.timeMode ?? "recommended";
+  const cityAnchorName = (req.cityLabel || req.city || "City").split(",")[0];
   const anchor: StartAnchor =
     req.startAnchor && req.startAnchor.type !== "city"
       ? req.startAnchor
       : {
           type: "city",
-          label: `${req.cityLabel.split(",")[0]} Center`,
+          label: `${cityAnchorName} Center`,
           lat: req.lat ?? req.startAnchor?.lat ?? 19.2437,
           lon: req.lon ?? req.startAnchor?.lon ?? 73.1355,
         };
@@ -599,12 +633,15 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
       req.interests.length === 0 ||
       req.interests.includes("food"));
 
+  const isMicroPlan = req.hoursPerDay <= 3;
   const dayCapacityMin = timeMode === "recommended" ? 10 * 60 : req.hoursPerDay * 60;
   const maxStopsPerDay = hasExplicitSelection
     ? Math.max(8, Math.ceil(pool.length / Math.max(req.days, 1)))
-    : timeMode === "recommended"
-      ? 6
-      : Math.max(2, Math.min(8, Math.floor(req.hoursPerDay / 1.3)));
+    : isMicroPlan
+      ? 2
+      : timeMode === "recommended"
+        ? 6
+        : Math.max(2, Math.min(8, Math.floor(req.hoursPerDay / 1.3)));
 
   const foodPool = scorePlaces(
     places.filter((p) => p.category === "food" && !excludedSet.has(p.id)),
@@ -634,9 +671,11 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
 
   // Partition sights across days
   const sightsBuckets: ScoredPlace[][] = Array.from({ length: req.days }, () => []);
-  const sightsPerDay = timeMode === "recommended"
-    ? 4
-    : Math.max(2, Math.min(6, Math.floor(req.hoursPerDay / 1.8)));
+  const sightsPerDay = isMicroPlan
+    ? 1
+    : timeMode === "recommended"
+      ? 4
+      : Math.max(1, Math.min(6, Math.floor(req.hoursPerDay / 1.8)));
 
   if (hasExplicitSelection) {
     if (req.days === 1) {
@@ -878,6 +917,10 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
     includeBreakfast: req.includeBreakfast,
     includeLunch: req.includeLunch,
     includeDinner: req.includeDinner,
+    persona: req.persona,
+    groupSize: req.groupSize,
+    accessibleOnly: req.accessibleOnly,
+    isMicroPlan,
   };
 
   return recomputePlanMetrics(initialPlan, { reslot: true, hoursPerDayCap: req.hoursPerDay });

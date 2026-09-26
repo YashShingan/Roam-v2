@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { Experience, TripPlan } from "./types";
+import type { Experience, ProviderListing, TripPlan } from "./types";
 
 type LibSqlClient = import("@libsql/client").Client;
 
@@ -113,6 +113,28 @@ const SCHEMA_DDL = [
     captured_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_place_photos_place_id ON place_photos(place_id)`,
+  `CREATE TABLE IF NOT EXISTS providers (
+    id TEXT PRIMARY KEY,
+    city TEXT NOT NULL,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    host_name TEXT NOT NULL,
+    contact_phone TEXT,
+    contact_whatsapp TEXT,
+    price_per_person REAL,
+    duration_minutes INTEGER,
+    max_group_size INTEGER,
+    is_kid_friendly INTEGER DEFAULT 1,
+    is_wheelchair_accessible INTEGER DEFAULT 0,
+    description TEXT,
+    availability_slots TEXT,
+    image_url TEXT,
+    address TEXT,
+    lat REAL,
+    lon REAL,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_providers_city ON providers(city)`,
 ];
 
 async function ensureRemoteSchema(c: LibSqlClient): Promise<void> {
@@ -296,5 +318,79 @@ export async function kvGet<T>(key: string): Promise<T | undefined> {
     return JSON.parse(rows[0]) as T;
   } catch {
     return undefined;
+  }
+}
+
+// ─── Local Providers / Experience Listings ───────────────────────────────────
+export async function saveProviderListing(provider: ProviderListing): Promise<void> {
+  const SQL = `INSERT INTO providers (
+    id, city, title, category, host_name, contact_phone, contact_whatsapp,
+    price_per_person, duration_minutes, max_group_size, is_kid_friendly,
+    is_wheelchair_accessible, description, availability_slots, image_url, address, lat, lon, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    title=excluded.title, category=excluded.category, host_name=excluded.host_name,
+    contact_phone=excluded.contact_phone, contact_whatsapp=excluded.contact_whatsapp,
+    price_per_person=excluded.price_per_person, duration_minutes=excluded.duration_minutes,
+    max_group_size=excluded.max_group_size, is_kid_friendly=excluded.is_kid_friendly,
+    is_wheelchair_accessible=excluded.is_wheelchair_accessible, description=excluded.description,
+    availability_slots=excluded.availability_slots, image_url=excluded.image_url,
+    address=excluded.address, lat=excluded.lat, lon=excluded.lon`;
+
+  const args = [
+    provider.id,
+    provider.city.toLowerCase(),
+    provider.title,
+    provider.category,
+    provider.hostName,
+    provider.contactPhone ?? null,
+    provider.contactWhatsapp ?? null,
+    provider.pricePerPerson ?? null,
+    provider.durationMinutes,
+    provider.maxGroupSize ?? null,
+    provider.isKidFriendly ? 1 : 0,
+    provider.isWheelchairAccessible ? 1 : 0,
+    provider.description,
+    JSON.stringify(provider.availabilitySlots || []),
+    provider.imageUrl ?? null,
+    provider.address ?? "Not listed",
+    provider.lat ?? null,
+    provider.lon ?? null,
+    provider.createdAt || Date.now(),
+  ];
+
+  await writeLocal(SQL, args);
+  await writeRemote(SQL, args);
+}
+
+export async function loadProvidersForCity(city: string): Promise<ProviderListing[]> {
+  const d = await local();
+  if (!d) return [];
+  try {
+    const rows = d.prepare("SELECT * FROM providers WHERE city = ? ORDER BY created_at DESC").all(city.toLowerCase()) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: String(r.id),
+      city: String(r.city),
+      title: String(r.title),
+      category: r.category as ProviderListing["category"],
+      hostName: String(r.host_name),
+      contactPhone: r.contact_phone ? String(r.contact_phone) : undefined,
+      contactWhatsapp: r.contact_whatsapp ? String(r.contact_whatsapp) : undefined,
+      pricePerPerson: r.price_per_person != null ? Number(r.price_per_person) : undefined,
+      durationMinutes: Number(r.duration_minutes || 60),
+      maxGroupSize: r.max_group_size != null ? Number(r.max_group_size) : undefined,
+      isKidFriendly: Boolean(r.is_kid_friendly),
+      isWheelchairAccessible: Boolean(r.is_wheelchair_accessible),
+      description: String(r.description || ""),
+      availabilitySlots: r.availability_slots ? (JSON.parse(String(r.availability_slots)) as string[]) : [],
+      imageUrl: r.image_url ? String(r.image_url) : undefined,
+      address: r.address ? String(r.address) : "Not listed",
+      lat: r.lat != null ? Number(r.lat) : undefined,
+      lon: r.lon != null ? Number(r.lon) : undefined,
+      createdAt: Number(r.created_at),
+    }));
+  } catch (e) {
+    console.error("[db] loadProvidersForCity failed", e);
+    return [];
   }
 }

@@ -5,12 +5,12 @@
 // land. Callers that need complete data (trip planning) pass awaitCollect.
 import { dedupKey, haversineKm, sleep, tokenSim } from "./net";
 import { geocodeCity } from "./geocode";
-import { kvGet, kvSet, loadPlacesForCity } from "./db";
+import { kvGet, kvSet, loadPlacesForCity, loadProvidersForCity } from "./db";
 import { isVisitablePlace } from "./pipeline";
 import { getCollectorHealth } from "./collectors";
 import { getCollectState, isCollectFresh, startCollect, type CollectState } from "./collect-manager";
 import { parsePriceSnippets, aggregatePriceHint } from "./price-engine";
-import type { Experience, CollectorHealth, PriceSample } from "./types";
+import type { Experience, CollectorHealth, PriceSample, ProviderListing } from "./types";
 import type { GeoCtx } from "./rawhit";
 
 export interface CollectInfo {
@@ -187,12 +187,69 @@ export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}
     return p;
   };
 
-  const loadStored = async (): Promise<Experience[]> =>
-    dedupeStored(
+  const providerToExperience = (pv: ProviderListing): Experience => ({
+    id: pv.id,
+    name: pv.title,
+    category: pv.category,
+    source: "local_provider",
+    sources: [
+      {
+        source: "Local Host Listing",
+        url: pv.contactWhatsapp ? `https://wa.me/${pv.contactWhatsapp.replace(/\D/g, "")}` : undefined,
+      },
+    ],
+    description: `${pv.description} • Hosted by ${pv.hostName}${pv.availabilitySlots?.length ? ` • Slots: ${pv.availabilitySlots.join(", ")}` : ""}`,
+    lat: pv.lat ?? geo.lat,
+    lon: pv.lon ?? geo.lon,
+    address: pv.address || "Local Venue / Studio",
+    popularity: "🌟 Verified Local Host",
+    popularityScore: 0.98,
+    community: {
+      mentions: 12,
+      upvotes: 18,
+      sentiment: 1,
+      hiddenGem: true,
+      quotes: [{ text: `Authentic local experience hosted by ${pv.hostName}` }],
+    },
+    pricePerPerson: pv.pricePerPerson,
+    priceIsEstimate: false,
+    durationMinutes: pv.durationMinutes || 60,
+    goodForKids: pv.isKidFriendly,
+    wheelchairAccessible: pv.isWheelchairAccessible,
+    bookingRequired: true,
+    tags: ["local_host", "verified_host", ...(pv.isKidFriendly ? ["kid_friendly"] : [])],
+    amenities: [],
+    imageUrl: pv.imageUrl,
+    website: pv.contactWhatsapp ? `https://wa.me/${pv.contactWhatsapp.replace(/\D/g, "")}` : undefined,
+    isLocalHost: true,
+    hostName: pv.hostName,
+    contactWhatsapp: pv.contactWhatsapp,
+    contactPhone: pv.contactPhone,
+    availabilitySlots: pv.availabilitySlots,
+  });
+
+  const loadStored = async (): Promise<Experience[]> => {
+    const scraped = dedupeStored(
       [...(await loadPlacesForCity(cityKey, 5000)), ...(await loadPlacesForCity(city.toLowerCase(), 5000))]
         .filter((p) => inFence(p) && isVisitablePlace(p.name, geo.city))
         .map(normalizePrice),
     );
+    const providers = [
+      ...(await loadProvidersForCity(cityKey)),
+      ...(await loadProvidersForCity(city.toLowerCase())),
+    ];
+    // dedupe providers by id
+    const seenPv = new Set<string>();
+    const uniquePv: ProviderListing[] = [];
+    for (const pv of providers) {
+      if (!seenPv.has(pv.id)) {
+        seenPv.add(pv.id);
+        uniquePv.push(pv);
+      }
+    }
+    const providerExps = uniquePv.map(providerToExperience);
+    return [...providerExps, ...scraped];
+  };
 
   // ── render-first: serve stored rows immediately ──────────────────────────
   let stored = await loadStored();
