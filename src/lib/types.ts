@@ -172,6 +172,9 @@ export interface ItineraryStop {
   timeOfDay?: string;
   isHighExertion?: boolean;
   exertionReason?: string;
+  openingHoursRaw?: string;
+  openStatusLabel?: string;
+  openStatusBadge?: "open" | "closed" | "unknown";
 }
 
 export interface TripDay {

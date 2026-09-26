@@ -172,13 +172,13 @@ export function trimPlanForLateRunning(
 }
 
 /**
- * Contextual alternative finder: Suggests top 3 smart substitutes in the same vicinity
- * if a planned activity is closed or unavailable.
+ * Contextual alternative finder: Suggests top smart substitutes in the same vicinity
+ * (including open & closed venues with status tags) if a planned activity is unavailable.
  */
 export function suggestAlternativesForStop(
   stop: ItineraryStop,
   candidatePool: Experience[],
-  limit = 3,
+  limit = 6,
 ): Experience[] {
   return candidatePool
     .filter((p) => p.id !== stop.experienceId && p.lat !== undefined && p.lon !== undefined)

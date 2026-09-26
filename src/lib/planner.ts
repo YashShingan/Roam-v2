@@ -12,7 +12,7 @@ import type {
   Vibe,
 } from "./types";
 import { haversineKm, cached } from "./net";
-import { openNowFromHours } from "./pipeline";
+import { openNowFromHours, getPlaceOpenStatus } from "./pipeline";
 import { deriveStopPriceInfo } from "./price-engine";
 
 export interface PlanRequest {
@@ -479,6 +479,12 @@ export function recomputePlanMetrics(
         s.note = `${s.travelMinFromPrev} min ${mLabel}${s.legKmFromPrev ? ` (${s.legKmFromPrev} km)` : ""} from previous`;
       }
 
+      if (s.openingHoursRaw && (!s.openStatusBadge || s.openStatusBadge === "unknown")) {
+        const st = getPlaceOpenStatus(s.openingHoursRaw);
+        s.openStatusLabel = st.label;
+        s.openStatusBadge = st.badge;
+      }
+
       if (s.lat !== undefined && s.lon !== undefined) {
         const prevPt =
           i > 0 && day.stops[i - 1].lat !== undefined && day.stops[i - 1].lon !== undefined
@@ -613,9 +619,25 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
   const excludedSet = new Set(req.excludedPlaceIds ?? []);
   const lockedSet = new Set(req.lockedPlaceIds ?? []);
 
+  const normKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+
   // 1. Strict place selection or category filtering (minus any disliked/excluded places)
   let candidatePool = places.filter((p) => !excludedSet.has(p.id));
   if (candidatePool.length === 0) candidatePool = [...places];
+
+  // Deduplicate candidates upfront by ID and normalized name to eliminate duplicate OSM/wiki nodes
+  const seenInitIds = new Set<string>();
+  const seenInitNames = new Set<string>();
+  const dedupedCandidates: Experience[] = [];
+  for (const p of candidatePool) {
+    const nk = normKey(p.name);
+    if (!seenInitIds.has(p.id) && (!nk || !seenInitNames.has(nk))) {
+      seenInitIds.add(p.id);
+      if (nk) seenInitNames.add(nk);
+      dedupedCandidates.push(p);
+    }
+  }
+  candidatePool = dedupedCandidates;
 
   if (req.selectedPlaceIds && req.selectedPlaceIds.length > 0) {
     const idSet = new Set(req.selectedPlaceIds.filter((id) => !excludedSet.has(id)));
@@ -679,6 +701,17 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
     places.filter((p) => p.category === "food" && !excludedSet.has(p.id)),
     req,
   );
+  // Deduplicate foodPool by normalized name
+  const seenFoodKeys = new Set<string>();
+  const dedupedFoodPool: ScoredPlace[] = [];
+  for (const f of foodPool) {
+    const nk = normKey(f.exp.name);
+    if (!seenFoodKeys.has(nk)) {
+      seenFoodKeys.add(nk);
+      dedupedFoodPool.push(f);
+    }
+  }
+
   const sightsPool = pool.filter((s) => s.exp.category !== "food");
 
   const wantBreakfast = !!req.includeBreakfast;
@@ -686,22 +719,29 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
   const wantDinner = !!req.includeDinner;
   const hasMealAnchors = wantBreakfast || wantLunch || wantDinner;
 
-  const usedFoodIds = new Set<string>();
+  const tripAssignedPlaceIds = new Set<string>();
+  const tripAssignedNames = new Set<string>();
+
   const pickFoodNear = (targetLat: number, targetLon: number): ScoredPlace | null => {
-    if (foodPool.length === 0) return null;
-    const unused = foodPool.filter((f) => !usedFoodIds.has(f.exp.id));
-    const candidates = unused.length > 0 ? unused : foodPool;
+    if (dedupedFoodPool.length === 0) return null;
+    const unused = dedupedFoodPool.filter(
+      (f) => !tripAssignedPlaceIds.has(f.exp.id) && !tripAssignedNames.has(normKey(f.exp.name)),
+    );
+    const candidates = unused.length > 0 ? unused : dedupedFoodPool;
     const sorted = [...candidates].sort((a, b) => {
       const distA = haversineKm(targetLat, targetLon, a.exp.lat ?? targetLat, a.exp.lon ?? targetLon);
       const distB = haversineKm(targetLat, targetLon, b.exp.lat ?? targetLat, b.exp.lon ?? targetLon);
       return distA - distB;
     });
     const picked = sorted[0];
-    if (picked) usedFoodIds.add(picked.exp.id);
+    if (picked) {
+      tripAssignedPlaceIds.add(picked.exp.id);
+      tripAssignedNames.add(normKey(picked.exp.name));
+    }
     return picked ?? null;
   };
 
-  // Partition sights across days
+  // Partition sights across days ensuring zero repetition
   const sightsBuckets: ScoredPlace[][] = Array.from({ length: req.days }, () => []);
   const sightsPerDay = isMicroPlan
     ? 1
@@ -728,7 +768,17 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
     if (req.days === 1) {
       sightsBuckets[0] = sightsPool.slice(0, sightsPerDay);
     } else {
-      const topSights = sightsPool.slice(0, req.days * sightsPerDay);
+      // Pick unique sights across all days
+      const topSights: ScoredPlace[] = [];
+      const seenSightKeys = new Set<string>();
+      for (const s of sightsPool) {
+        const nk = normKey(s.exp.name);
+        if (!seenSightKeys.has(nk)) {
+          seenSightKeys.add(nk);
+          topSights.push(s);
+          if (topSights.length >= req.days * sightsPerDay) break;
+        }
+      }
       const withAngle = topSights.map((c) => {
         const dLat = (c.exp.lat ?? anchor.lat) - anchor.lat;
         const dLon = (c.exp.lon ?? anchor.lon) - anchor.lon;
@@ -756,6 +806,14 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
         const bIdx = Math.min(req.days - 1, Math.floor((idx / Math.max(withAngle.length, 1)) * req.days));
         sightsBuckets[bIdx].push(item.c);
       });
+    }
+  }
+
+  // Pre-seed assigned place IDs with partitioned sights so meal anchors won't collide with sights
+  for (const bucket of sightsBuckets) {
+    for (const item of bucket) {
+      tripAssignedPlaceIds.add(item.exp.id);
+      tripAssignedNames.add(normKey(item.exp.name));
     }
   }
 
@@ -879,6 +937,7 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
       void open;
 
       const isHighEx = isHighExertionStop(exp);
+      const openStatus = getPlaceOpenStatus(exp.openingHoursRaw);
       stops.push({
         experienceId: exp.id,
         name: exp.name,
@@ -901,6 +960,9 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
         locked: lockedSet.has(exp.id),
         isHighExertion: isHighEx,
         exertionReason: isHighEx ? "Strenuous climb / trek (3+ hrs) — high exertion" : undefined,
+        openingHoursRaw: exp.openingHoursRaw,
+        openStatusLabel: openStatus.label,
+        openStatusBadge: openStatus.badge,
       });
     }
 

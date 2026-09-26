@@ -463,3 +463,113 @@ export function openNowFromHours(raw: string | undefined, now = new Date()): boo
   }
   return anyRule ? open : null;
 }
+
+export interface PlaceOpenStatus {
+  isOpenToday: boolean | null;
+  isOpenNow: boolean | null;
+  label: string;
+  badge: "open" | "closed" | "unknown";
+}
+
+/**
+ * Evaluates whether a place is scheduled open today and if it is currently open right now.
+ */
+export function getPlaceOpenStatus(raw: string | undefined, now = new Date()): PlaceOpenStatus {
+  if (!raw) {
+    return {
+      isOpenToday: null,
+      isOpenNow: null,
+      label: "Hours unverified",
+      badge: "unknown",
+    };
+  }
+
+  if (/24\/7/i.test(raw)) {
+    return {
+      isOpenToday: true,
+      isOpenNow: true,
+      label: "Open 24/7",
+      badge: "open",
+    };
+  }
+
+  const dayMap: Record<string, number> = { mo: 1, tu: 2, we: 3, th: 4, fr: 5, sa: 6, su: 0 };
+  const keys = Object.keys(dayMap);
+  const expandDays = (spec: string): number[] => {
+    const out: number[] = [];
+    for (const piece of spec.split(",")) {
+      const rng = piece.trim().match(/^([A-Za-z]{2})-([A-Za-z]{2})$/);
+      if (rng) {
+        const i1 = keys.indexOf(rng[1].toLowerCase());
+        const i2 = keys.indexOf(rng[2].toLowerCase());
+        if (i1 > -1 && i2 > -1) {
+          for (let i = i1; ; i = (i + 1) % 7) {
+            out.push(dayMap[keys[i]]);
+            if (i === i2) break;
+          }
+          continue;
+        }
+      }
+      const single = dayMap[piece.trim().toLowerCase()];
+      if (single !== undefined) out.push(single);
+    }
+    return out;
+  };
+
+  const currentDay = now.getDay();
+  const timeMin = now.getHours() * 60 + now.getMinutes();
+
+  let hasRules = false;
+  let scheduledToday = false;
+  let openRightNow = false;
+  let todayHoursRange = "";
+
+  for (const part of raw.split(";")) {
+    const m = part.trim().match(/^([A-Za-z,\-]*)\s*(?:(\d{1,2}):(\d{2}))?\s*-\s*(?:(\d{1,2}):(\d{2}))?$/);
+    if (!m) continue;
+    hasRules = true;
+    const startH = m[2] ? m[2].padStart(2, "0") : "00";
+    const startM = m[3] ? m[3] : "00";
+    const endH = m[4] ? m[4].padStart(2, "0") : "23";
+    const endM = m[5] ? m[5] : "59";
+
+    const startMin = Number(startH) * 60 + Number(startM);
+    const endMin = Number(endH) * 60 + Number(endM);
+
+    const days = m[1] ? expandDays(m[1]) : [];
+    const appliesToday = days.length === 0 || days.includes(currentDay);
+
+    if (appliesToday) {
+      scheduledToday = true;
+      todayHoursRange = `${startH}:${startM}–${endH}:${endM}`;
+      if (timeMin >= startMin && timeMin <= endMin) {
+        openRightNow = true;
+      }
+    }
+  }
+
+  if (!hasRules) {
+    return {
+      isOpenToday: null,
+      isOpenNow: null,
+      label: "Hours unverified",
+      badge: "unknown",
+    };
+  }
+
+  if (!scheduledToday) {
+    return {
+      isOpenToday: false,
+      isOpenNow: false,
+      label: "Closed today",
+      badge: "closed",
+    };
+  }
+
+  return {
+    isOpenToday: true,
+    isOpenNow: openRightNow,
+    label: openRightNow ? `Open now (${todayHoursRange})` : `Open today (${todayHoursRange})`,
+    badge: "open",
+  };
+}

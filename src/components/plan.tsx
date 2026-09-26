@@ -49,6 +49,7 @@ import { translate, type DictKey } from "@/lib/i18n";
 import { useRoam } from "@/lib/store";
 import { download, icsForPlan, planToText } from "@/lib/exports";
 import { buildMultiStopGmapsUrl, recomputePlanMetrics } from "@/lib/planner";
+import { getPlaceOpenStatus } from "@/lib/pipeline";
 import {
   adaptPlanForWeather,
   trimPlanForLateRunning,
@@ -193,7 +194,7 @@ export function PlanSheet({
 
   const handleOpenAlternatives = (stop: ItineraryStop) => {
     setSelectedAltStop(stop);
-    const alts = suggestAlternativesForStop(stop, places, 4);
+    const alts = suggestAlternativesForStop(stop, places, 6);
     setAltCandidates(alts);
   };
 
@@ -204,6 +205,7 @@ export function PlanSheet({
     const sIdx = day.stops.findIndex((s) => s.experienceId === selectedAltStop.experienceId);
     if (sIdx >= 0) {
       const old = day.stops[sIdx];
+      const openSt = getPlaceOpenStatus(alt.openingHoursRaw);
       day.stops[sIdx] = {
         experienceId: alt.id,
         name: alt.name,
@@ -219,6 +221,9 @@ export function PlanSheet({
         lat: alt.lat,
         lon: alt.lon,
         imageUrl: alt.imageUrl,
+        openingHoursRaw: alt.openingHoursRaw,
+        openStatusLabel: openSt.label,
+        openStatusBadge: openSt.badge,
         note: `Smart substitute for ${old.name}`,
       };
       const updated = recomputePlanMetrics(next, { reslot: true });
@@ -1120,17 +1125,24 @@ export function PlanSheet({
       onToggleMaximize={() => setIsMaximized((v) => !v)}
     >
       <div className="thin-scroll flex h-full flex-col overflow-y-auto print-plan">
-        <div className="sticky top-0 z-10 bg-card/95 px-4 sm:px-5 pb-3 pt-4 sm:pt-5 backdrop-blur border-b border-border/40">
-          <div className="flex items-center justify-between gap-2">
-            <h2 id="plan-title" className="text-xl font-bold truncate">
+        <div className="sticky top-0 z-10 bg-card/95 px-4 sm:px-5 pb-2.5 pt-3 backdrop-blur border-b border-border/40 space-y-2">
+          {/* Header Title with pr-24 clearance so close & maximize buttons never collide */}
+          <div className="flex items-center justify-between gap-2 pr-24">
+            <h2 id="plan-title" className="text-lg sm:text-xl font-bold truncate">
               🗓️ {t("plan.title")} — {plan.cityLabel.split(",")[0]}
             </h2>
-            <div className="flex items-center gap-1 shrink-0">
+          </div>
+
+          {/* Sub-bar: Transport Mode Switcher & Quick Navigation */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="inline-flex items-center gap-1 bg-surface/90 p-1 rounded-xl border border-border/50 shadow-sm">
               <button
                 onClick={() => handleTransportSwitch("walk")}
                 className={cn(
-                  "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold transition-all",
-                  transportMode === "walk" ? "bg-primary text-primary-foreground shadow-sm" : "bg-surface text-muted-foreground",
+                  "flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all",
+                  transportMode === "walk"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
                 title="Walking OSRM route"
               >
@@ -1139,8 +1151,10 @@ export function PlanSheet({
               <button
                 onClick={() => handleTransportSwitch("drive")}
                 className={cn(
-                  "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold transition-all",
-                  transportMode === "drive" ? "bg-primary text-primary-foreground shadow-sm" : "bg-surface text-muted-foreground",
+                  "flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all",
+                  transportMode === "drive"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
                 title="Driving / Auto OSRM route"
               >
@@ -1149,30 +1163,75 @@ export function PlanSheet({
               <button
                 onClick={() => handleTransportSwitch("transit")}
                 className={cn(
-                  "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold transition-all",
-                  transportMode === "transit" ? "bg-primary text-primary-foreground shadow-sm" : "bg-surface text-muted-foreground",
+                  "flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all",
+                  transportMode === "transit"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
                 title="Public transit / bus / auto route"
               >
                 <Bus size={12} /> Transit
               </button>
             </div>
+
+            <div className="flex items-center gap-1.5 text-[11px]">
+              {fullDayGmapsUrl && (
+                <a
+                  href={fullDayGmapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary px-2.5 py-1 font-semibold transition-colors"
+                  title="Open full multi-stop day route in Google Maps"
+                >
+                  <Navigation size={11} />
+                  <span>Google Maps</span>
+                  <ExternalLink size={10} />
+                </a>
+              )}
+              <button
+                onClick={() => setShowRouteMap((v) => !v)}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-lg px-2 py-1 font-semibold transition-colors",
+                  showRouteMap ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <MapIcon size={11} /> {showRouteMap ? "Hide Map" : "Map"}
+              </button>
+              {onViewOnMap && (
+                <button
+                  onClick={() => {
+                    onClose();
+                    onViewOnMap();
+                  }}
+                  className="clay-raised-sm inline-flex items-center gap-1 rounded-lg px-2 py-1 font-semibold text-foreground hover:text-primary transition-colors"
+                >
+                  <Compass size={11} /> Full Map
+                </button>
+              )}
+              <button
+                onClick={() => setShowPlaceSelector((v) => !v)}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-lg px-2 py-1 font-semibold transition-colors",
+                  showPlaceSelector ? "bg-accent text-white" : "bg-surface text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <ListChecks size={11} /> Filter
+              </button>
+            </div>
           </div>
 
-          <div
-            className={cn(
-              "mt-2 rounded-xl px-3.5 py-2 text-[12px] font-medium",
-              plan.feasibility.ok ? "bg-accent/12 text-accent" : "bg-gold/15 text-gold",
-            )}
-            role="status"
-          >
-            {plan.feasibility.ok ? "✓ " : "⚠️ "}
-            {plan.feasibility.message}
-          </div>
-
-          {plan.budgetBand && (
-            <div className="mt-2 rounded-xl bg-surface/80 p-2.5 text-[12px] text-muted-foreground border border-border/50 flex flex-wrap items-center justify-between gap-1">
-              <span>
+          {/* Unified Compact Status Ribbon: Feasibility + Budget */}
+          <div className="rounded-xl bg-surface/70 border border-border/50 px-3 py-1.5 text-[11px] flex flex-wrap items-center justify-between gap-1.5">
+            <div className="flex items-center gap-1.5 flex-1 min-w-[200px]">
+              <span className={plan.feasibility.ok ? "text-accent font-bold" : "text-amber-500 font-bold"}>
+                {plan.feasibility.ok ? "✓" : "⚠️"}
+              </span>
+              <span className="font-medium text-foreground truncate">
+                {plan.feasibility.message}
+              </span>
+            </div>
+            {plan.budgetBand && (
+              <div className="flex items-center gap-1 shrink-0 text-muted-foreground">
                 <span className="font-bold text-foreground">
                   💰{" "}
                   {plan.budgetBand.pricedCount > 0
@@ -1180,36 +1239,36 @@ export function PlanSheet({
                       ? `₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}`
                       : `₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}–₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.max)}`
                     : "Varies"}
-                </span>{" "}
-                band · {plan.budgetBand.pricedCount} of {plan.budgetBand.totalStops} stops priced ({plan.budgetBand.note})
-              </span>
-            </div>
-          )}
+                </span>
+                <span className="text-[10px]">({plan.budgetBand.pricedCount}/{plan.budgetBand.totalStops} priced)</span>
+              </div>
+            )}
+          </div>
 
           {/* Dynamic Weather Circumstance Alert Banner & Late Running Adjuster */}
           {plan.weatherAlert ? (
-            <div className="mt-2.5 rounded-xl bg-sky-500/15 border border-sky-500/40 p-2.5 text-xs text-sky-900 dark:text-sky-200 flex items-center justify-between gap-2">
-              <span className="font-medium">{plan.weatherAlert}</span>
-              <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider bg-sky-500/20 px-2 py-0.5 rounded-full">
+            <div className="rounded-xl bg-sky-500/15 border border-sky-500/30 px-3 py-1.5 text-xs text-sky-900 dark:text-sky-200 flex items-center justify-between gap-2">
+              <span className="font-medium text-[11px]">{plan.weatherAlert}</span>
+              <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider bg-sky-500/20 px-1.5 py-0.5 rounded-full">
                 Adapted
               </span>
             </div>
           ) : (
-            <div className="mt-2 flex items-center justify-between gap-2">
+            <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px]">
               <button
                 type="button"
                 onClick={() => handleWeatherAdapt("rain")}
                 disabled={adaptingWeather}
-                className="text-[11px] font-semibold text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1"
+                className="font-medium text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1"
                 title="Automatically swap outdoor trails for covered venues if rain occurs"
               >
-                <span>🌧️ {adaptingWeather ? "Adapting..." : "Adapt for Rain (Swap to Indoor)"}</span>
+                <span>🌧️ {adaptingWeather ? "Adapting..." : "Adapt for Rain"}</span>
               </button>
               <button
                 type="button"
                 onClick={() => handleRunningLate(60)}
                 disabled={trimmingLate}
-                className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1"
+                className="font-medium text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1"
                 title="Running 1 hour behind schedule? Auto-trim non-meal stop to catch up"
               >
                 <span>⏰ {trimmingLate ? "Trimming..." : "Running 1h Late"}</span>
@@ -1219,73 +1278,27 @@ export function PlanSheet({
 
           {/* Emotion-aware Trek Fatigue Alert Banner */}
           {day.highExertionTrekDetected && (day.remainingStopsAfterTrekCount ?? 0) > 0 && (
-            <div className="mt-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs space-y-2">
-              <div className="flex items-start gap-2.5">
-                <span className="text-lg leading-none">⚡</span>
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs space-y-1.5">
+              <div className="flex items-start gap-2">
+                <span className="text-base leading-none">⚡</span>
                 <div className="flex-1">
-                  <p className="font-bold text-amber-900 dark:text-amber-200">
+                  <p className="font-bold text-amber-900 dark:text-amber-200 text-xs">
                     Strenuous trek detected: {day.exertionStopName}
                   </p>
-                  <p className="mt-0.5 text-muted-foreground text-[11px] leading-relaxed">
-                    Fort climbs and rugged trails take immense stamina. We added a 45-min recovery &amp; chai buffer.
-                    Feeling tired after the ascent?
+                  <p className="text-muted-foreground text-[11px] leading-tight">
+                    Fort climbs take stamina. 45-min recovery buffer added. Tired after ascent?
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => shiftTrekRemainingToDay2(dayIdx, (day.exertionStopIndex ?? 0) + 1)}
-                className="w-full flex items-center justify-center gap-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 text-xs shadow-sm transition-colors active:scale-95"
+                className="w-full flex items-center justify-center gap-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 text-xs shadow-sm transition-colors active:scale-95"
               >
                 <span>🌙 Shift remaining {day.remainingStopsAfterTrekCount} stops to Day {dayIdx + 2}</span>
               </button>
             </div>
           )}
-
-          {/* Multi-stop Route Action Bar */}
-          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-            {fullDayGmapsUrl && (
-              <a
-                href={fullDayGmapsUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-1.5 text-[11px] font-bold text-primary-foreground shadow-sm hover:opacity-95"
-                title="Open full multi-stop day route in Google Maps"
-              >
-                <Navigation size={12} />
-                <span>Open Full Route in Google Maps</span>
-                <ExternalLink size={10} />
-              </a>
-            )}
-            <button
-              onClick={() => setShowRouteMap((v) => !v)}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-bold",
-                showRouteMap ? "clay-pressed text-primary" : "clay-raised-sm text-muted-foreground",
-              )}
-            >
-              <MapIcon size={12} /> {showRouteMap ? "Hide Route Map" : "Show Route Map"}
-            </button>
-            {onViewOnMap && (
-              <button
-                onClick={() => {
-                  onClose();
-                  onViewOnMap();
-                }}
-                className="clay-raised-sm inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-bold text-foreground hover:text-primary"
-              >
-                <Compass size={12} /> Full Map
-              </button>
-            )}
-            <button
-              onClick={() => setShowPlaceSelector((v) => !v)}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-bold",
-                showPlaceSelector ? "bg-accent text-white" : "clay-raised-sm text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <ListChecks size={12} /> Select Places &amp; Anchor
-            </button>
-          </div>
+        </div>
 
           {/* Meal Anchors Selector */}
           <div className="mt-2 rounded-xl border border-border/50 bg-surface/70 p-2 space-y-1.5">
@@ -1367,7 +1380,6 @@ export function PlanSheet({
               {visitedCount}/{allStops.length} visited
             </span>
           </div>
-        </div>
 
         <div
           className={cn(
@@ -1664,32 +1676,45 @@ export function PlanSheet({
 
           {/* Stops Timeline */}
           <ol className="space-y-2.5">
-            {day.stops.map((s, sIdx) => (
-              <motion.li
-                key={`${s.experienceId}-${sIdx}`}
-                layout
-                transition={SPRING}
-                className={cn("clay-raised-sm p-3.5", s.visited && "opacity-70")}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="flex flex-col items-center gap-1.5 mt-0.5 shrink-0">
-                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[11px] font-extrabold text-primary-foreground shadow-sm">
-                      {sIdx + 1}
-                    </span>
-                    <button
-                      onClick={() => mutateStop(dayIdx, sIdx, { visited: !s.visited })}
-                      aria-label={s.visited ? "Mark unvisited" : "Mark visited"}
-                      className="text-accent"
-                    >
-                      {s.visited ? <CheckCircle2 size={18} className="fill-accent/20" /> : <Circle size={18} />}
-                    </button>
-                  </div>
-
-                  <div className="min-w-0 flex-1">
+            {day.stops.map((s, sIdx) => {
+              const isClosedToday = s.openStatusBadge === "closed";
+              return (
+                <motion.li
+                  key={`${s.experienceId}-${sIdx}`}
+                  layout
+                  transition={SPRING}
+                  className={cn(
+                    "clay-raised-sm p-3 rounded-2xl border transition-all",
+                    s.visited && "opacity-70",
+                    isClosedToday ? "border-rose-500/20 bg-card/60" : "border-border/40 bg-card/85",
+                  )}
+                >
+                  {/* Top Bar: Order & Visited, Time Slot, Open/Closed Badge, Quick Move/Delete */}
+                  <div className="flex items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <p className="text-[11px] font-bold text-primary">
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-extrabold text-primary-foreground shadow-sm">
+                        {sIdx + 1}
+                      </span>
+                      <button
+                        onClick={() => mutateStop(dayIdx, sIdx, { visited: !s.visited })}
+                        aria-label={s.visited ? "Mark unvisited" : "Mark visited"}
+                        className="text-accent"
+                      >
+                        {s.visited ? <CheckCircle2 size={16} className="fill-accent/20" /> : <Circle size={16} />}
+                      </button>
+                      <span className="text-[11px] font-bold text-primary">
                         {s.slotStart}–{s.slotEnd}
-                      </p>
+                      </span>
+                      {s.openStatusBadge === "open" && (
+                        <span className="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                          🟢 Open today
+                        </span>
+                      )}
+                      {s.openStatusBadge === "closed" && (
+                        <span className="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300">
+                          🔴 Closed today
+                        </span>
+                      )}
                       {s.timeOfDay && TIME_BADGES[s.timeOfDay] && (
                         <span
                           className={cn(
@@ -1712,219 +1737,225 @@ export function PlanSheet({
                       </button>
                     </div>
 
-                    {/* Inline Travel Time & Visit Duration Editor */}
-                    {editingStopIdx === sIdx && (
-                      <div className="mt-2 rounded-xl bg-surface/90 p-2.5 border border-border/60 flex flex-wrap items-center gap-3 text-xs">
-                        <label className="flex items-center gap-1.5 font-semibold">
-                          <span>{transportMode === "drive" ? "🚗 Leg travel (min):" : "🚶 Leg walk (min):"}</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={240}
-                            value={s.travelMinFromPrev}
-                            onChange={(e) =>
-                              mutateStop(dayIdx, sIdx, {
-                                travelMinFromPrev: Math.max(0, Number(e.target.value) || 0),
-                              })
-                            }
-                            className="w-16 rounded-lg border border-border bg-card px-2 py-0.5 text-center font-bold"
-                          />
-                        </label>
-                        <label className="flex items-center gap-1.5 font-semibold">
-                          <span>⏱️ Stay duration (min):</span>
-                          <input
-                            type="number"
-                            min={10}
-                            max={480}
-                            step={5}
-                            value={s.durationMinutes}
-                            onChange={(e) =>
-                              mutateStop(dayIdx, sIdx, {
-                                durationMinutes: Math.max(10, Number(e.target.value) || 30),
-                              })
-                            }
-                            className="w-16 rounded-lg border border-border bg-card px-2 py-0.5 text-center font-bold"
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => setEditingStopIdx(null)}
-                          className="ml-auto text-[11px] font-bold text-primary hover:underline"
-                        >
-                          Done
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="mt-1.5 flex items-start gap-2.5">
-                      {s.imageUrl && (
-                        <img
-                          src={s.imageUrl}
-                          alt={s.name}
-                          className="h-11 w-11 rounded-lg object-cover shrink-0 border border-border/40"
-                          loading="lazy"
-                        />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <button
-                          onClick={() => {
-                            const existing = places.find((p) => p.id === s.experienceId);
-                            if (existing) {
-                              onOpenPlace(existing);
-                              return;
-                            }
-                            const exp: Experience = {
-                              id: s.experienceId,
-                              name: s.name.replace(/ \(lunch anchor\)$/, ""),
-                              category: s.category,
-                              source: "plan",
-                              sources: [],
-                              address: "Not listed",
-                              popularity: "",
-                              popularityScore: 0,
-                              community: { mentions: 0, upvotes: 0, sentiment: 0, quotes: [] },
-                              durationMinutes: s.durationMinutes,
-                              bookingRequired: false,
-                              tags: [],
-                              amenities: [],
-                              lat: s.lat,
-                              lon: s.lon,
-                              imageUrl: s.imageUrl,
-                              pricePerPerson: s.pricePerPerson,
-                              gmapsDirectionsUrl: s.gmapsDirectionsUrl,
-                            };
-                            onOpenPlace(exp);
-                          }}
-                          className="block text-left font-bold leading-snug hover:text-primary"
-                        >
-                          {CATEGORY_EMOJI[s.category]} {s.name}
-                        </button>
-                        {s.note && <p className="mt-0.5 text-[12px] text-muted-foreground">{s.note}</p>}
-                      </div>
-                    </div>
-
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                      <span
-                        className={cn(
-                          "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold",
-                          !s.priceBasis || s.priceBasis.includes("Varies")
-                            ? "bg-surface text-muted-foreground"
-                            : "bg-primary/10 text-primary",
-                        )}
-                        title={s.priceQuote ?? s.priceBasis}
-                      >
-                        🏷️ {s.priceBasis ?? (s.pricePerPerson !== undefined ? `~₹${s.pricePerPerson} pp` : "Varies on site")}
-                      </span>
-                      {s.isHighExertion && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/25"
-                          title="Strenuous trek/climb: 45-min recovery buffer added after this stop"
-                        >
-                          ⚡ Trek (+45m rest)
-                        </span>
-                      )}
-                      {s.lat !== undefined && s.lon !== undefined && (
-                        <a
-                          href={
-                            s.gmapsDirectionsUrl ??
-                            `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`
-                          }
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 rounded-md bg-surface px-2 py-0.5 text-[11px] font-semibold text-primary hover:underline"
-                          title="Open leg directions in Google Maps"
-                        >
-                          <Navigation size={10} />
-                          <span>Leg Directions</span>
-                        </a>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex shrink-0 flex-col items-center gap-1">
-                    <div className="flex gap-1">
+                    <div className="flex items-center gap-0.5 shrink-0">
                       <button
                         onClick={() => mutateStop(dayIdx, sIdx, {}, -1)}
                         disabled={sIdx === 0}
                         aria-label="Move up"
-                        className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg disabled:opacity-40"
+                        className="clay-raised-sm flex h-6 w-6 items-center justify-center rounded-md disabled:opacity-30 text-muted-foreground hover:text-foreground"
                       >
-                        <ArrowUp size={13} />
+                        <ArrowUp size={12} />
                       </button>
                       <button
                         onClick={() => mutateStop(dayIdx, sIdx, {}, 1)}
                         disabled={sIdx === day.stops.length - 1}
                         aria-label="Move down"
-                        className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg disabled:opacity-40"
+                        className="clay-raised-sm flex h-6 w-6 items-center justify-center rounded-md disabled:opacity-30 text-muted-foreground hover:text-foreground"
                       >
-                        <ArrowDown size={13} />
+                        <ArrowDown size={12} />
+                      </button>
+                      <button
+                        onClick={() => removeStop(dayIdx, sIdx)}
+                        aria-label={`Remove ${s.name}`}
+                        className="clay-raised-sm flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-red-400"
+                      >
+                        <X size={12} />
                       </button>
                     </div>
-                    <div className="flex gap-1">
+                  </div>
+
+                  {/* Inline Travel Time & Visit Duration Editor */}
+                  {editingStopIdx === sIdx && (
+                    <div className="mt-2 rounded-xl bg-surface/90 p-2.5 border border-border/60 flex flex-wrap items-center gap-3 text-xs">
+                      <label className="flex items-center gap-1.5 font-semibold">
+                        <span>{transportMode === "drive" ? "🚗 Leg travel (min):" : "🚶 Leg walk (min):"}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={240}
+                          value={s.travelMinFromPrev}
+                          onChange={(e) =>
+                            mutateStop(dayIdx, sIdx, {
+                              travelMinFromPrev: Math.max(0, Number(e.target.value) || 0),
+                            })
+                          }
+                          className="w-16 rounded-lg border border-border bg-card px-2 py-0.5 text-center font-bold"
+                        />
+                      </label>
+                      <label className="flex items-center gap-1.5 font-semibold">
+                        <span>⏱️ Stay duration (min):</span>
+                        <input
+                          type="number"
+                          min={10}
+                          max={480}
+                          step={5}
+                          value={s.durationMinutes}
+                          onChange={(e) =>
+                            mutateStop(dayIdx, sIdx, {
+                              durationMinutes: Math.max(10, Number(e.target.value) || 30),
+                            })
+                          }
+                          className="w-16 rounded-lg border border-border bg-card px-2 py-0.5 text-center font-bold"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setEditingStopIdx(null)}
+                        className="ml-auto text-[11px] font-bold text-primary hover:underline"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Middle: Place info, Note, Badges & Directions */}
+                  <div className="mt-2 flex items-start gap-2.5">
+                    {s.imageUrl && (
+                      <img
+                        src={s.imageUrl}
+                        alt={s.name}
+                        className="h-11 w-11 rounded-xl object-cover shrink-0 border border-border/40"
+                        loading="lazy"
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <button
+                        onClick={() => {
+                          const existing = places.find((p) => p.id === s.experienceId);
+                          if (existing) {
+                            onOpenPlace(existing);
+                            return;
+                          }
+                          const exp: Experience = {
+                            id: s.experienceId,
+                            name: s.name.replace(/ \(lunch anchor\)$/, ""),
+                            category: s.category,
+                            source: "plan",
+                            sources: [],
+                            address: "Not listed",
+                            popularity: "",
+                            popularityScore: 0,
+                            community: { mentions: 0, upvotes: 0, sentiment: 0, quotes: [] },
+                            durationMinutes: s.durationMinutes,
+                            bookingRequired: false,
+                            tags: [],
+                            amenities: [],
+                            lat: s.lat,
+                            lon: s.lon,
+                            imageUrl: s.imageUrl,
+                            pricePerPerson: s.pricePerPerson,
+                            gmapsDirectionsUrl: s.gmapsDirectionsUrl,
+                          };
+                          onOpenPlace(exp);
+                        }}
+                        className="block text-left font-bold text-xs sm:text-sm leading-snug hover:text-primary transition-colors"
+                      >
+                        {CATEGORY_EMOJI[s.category]} {s.name}
+                      </button>
+                      {s.note && <p className="mt-0.5 text-[11px] text-muted-foreground">{s.note}</p>}
+                    </div>
+                  </div>
+
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold",
+                        !s.priceBasis || s.priceBasis.includes("Varies")
+                          ? "bg-surface text-muted-foreground"
+                          : "bg-primary/10 text-primary",
+                      )}
+                      title={s.priceQuote ?? s.priceBasis}
+                    >
+                      🏷️ {s.priceBasis ?? (s.pricePerPerson !== undefined ? `~₹${s.pricePerPerson} pp` : "Varies on site")}
+                    </span>
+                    {s.isHighExertion && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/25"
+                        title="Strenuous trek/climb: 45-min recovery buffer added after this stop"
+                      >
+                        ⚡ Trek (+45m rest)
+                      </span>
+                    )}
+                    {s.lat !== undefined && s.lon !== undefined && (
+                      <a
+                        href={
+                          s.gmapsDirectionsUrl ??
+                          `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-md bg-surface px-2 py-0.5 text-[11px] font-semibold text-primary hover:underline"
+                        title="Open leg directions in Google Maps"
+                      >
+                        <Navigation size={10} />
+                        <span>Leg Directions</span>
+                      </a>
+                    )}
+                  </div>
+
+                  {/* Sleek Horizontal Action Bar */}
+                  <div className="mt-2.5 pt-2 border-t border-border/30 flex flex-wrap items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1">
                       <button
                         onClick={() => reactStop(dayIdx, sIdx, s.experienceId, s.name, 1)}
                         aria-label={`Keep ${s.name}`}
                         title="Like & keep this stop when you Re-plan"
                         className={cn(
-                          "flex h-7 items-center gap-0.5 rounded-lg px-1.5 text-[11px] font-bold transition-colors",
+                          "flex h-6 items-center gap-1 rounded-lg px-2 text-[10px] font-bold transition-all",
                           reactions[s.experienceId] === 1 || s.locked
                             ? "bg-accent text-white shadow-sm"
-                            : "clay-raised-sm text-accent hover:bg-accent/10",
+                            : "bg-surface text-accent hover:bg-accent/10 border border-border/40",
                         )}
                       >
-                        <ThumbsUp size={12} />
-                        {reactions[s.experienceId] === 1 ? "Keep" : ""}
+                        <ThumbsUp size={11} />
+                        <span>Keep</span>
                       </button>
                       <button
                         onClick={() => reactStop(dayIdx, sIdx, s.experienceId, s.name, -1)}
                         aria-label={`Swap ${s.name} on Re-plan`}
                         title="Dislike — mark to swap out when you click Re-plan"
                         className={cn(
-                          "flex h-7 items-center gap-0.5 rounded-lg px-1.5 text-[11px] font-bold transition-colors",
+                          "flex h-6 items-center gap-1 rounded-lg px-2 text-[10px] font-bold transition-all",
                           reactions[s.experienceId] === -1
                             ? "bg-red-500 text-white shadow-sm"
-                            : "clay-raised-sm text-muted-foreground hover:text-red-500",
+                            : "bg-surface text-muted-foreground hover:text-red-500 border border-border/40",
                         )}
                       >
-                        <ThumbsDown size={12} />
-                        {reactions[s.experienceId] === -1 ? "Swap" : ""}
+                        <ThumbsDown size={11} />
+                        <span>Swap</span>
                       </button>
-                    </div>
-                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenAlternatives(s)}
+                        title="Find smart alternatives nearby"
+                        className="flex h-6 items-center gap-1 rounded-lg bg-surface px-2 text-[10px] font-bold text-primary hover:bg-primary/10 border border-border/40 transition-colors"
+                      >
+                        <span>🔄 Alt</span>
+                      </button>
                       <button
                         onClick={() => mutateStop(dayIdx, sIdx, { locked: !s.locked })}
-                        aria-label={s.locked ? "Unlock stop" : "Lock stop on re-plan"}
+                        aria-label={s.locked ? "Unlock stop" : "Lock stop"}
+                        title={s.locked ? "Unlock stop" : "Lock stop on re-plan"}
                         className={cn(
-                          "clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg",
-                          s.locked && "clay-pressed text-primary",
+                          "flex h-6 items-center gap-1 rounded-lg px-2 text-[10px] font-bold transition-all border",
+                          s.locked
+                            ? "bg-primary/20 text-primary border-primary/40 shadow-sm"
+                            : "bg-surface text-muted-foreground hover:text-foreground border-border/40",
                         )}
                       >
-                        {s.locked ? <Lock size={12} /> : <LockOpen size={12} />}
-                      </button>
-                      <button
-                        onClick={() => removeStop(dayIdx, sIdx)}
-                        aria-label={`Remove ${s.name}`}
-                        className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:text-red-400"
-                      >
-                        <X size={13} />
+                        {s.locked ? <Lock size={11} /> : <LockOpen size={11} />}
+                        <span>{s.locked ? "Locked" : "Lock"}</span>
                       </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenAlternatives(s)}
-                      title="Activity closed or unavailable? Choose a smart substitute"
-                      className="clay-raised-sm flex h-6 w-full items-center justify-center gap-1 rounded-md text-[10px] font-bold text-primary hover:bg-primary/10 transition-colors"
-                    >
-                      <span>🔄 Alt</span>
-                    </button>
+
                     {plan.days.length > 1 && (
-                      <div className="w-full">
+                      <div className="flex items-center gap-1 text-[10px]">
+                        <span className="text-muted-foreground font-semibold">Move to:</span>
                         <select
                           value={dayIdx}
                           onChange={(e) => moveStopToDay(dayIdx, Number(e.target.value), sIdx)}
                           aria-label={`Move ${s.name} to another day`}
-                          title="Move to another day"
-                          className="h-6 w-full rounded-md border border-border/60 bg-surface px-1 text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-primary cursor-pointer text-center"
+                          className="h-6 rounded-md border border-border/60 bg-surface px-1 text-[10px] font-bold text-foreground cursor-pointer"
                         >
                           {plan.days.map((_, i) => (
                             <option key={i} value={i}>
@@ -1935,9 +1966,9 @@ export function PlanSheet({
                       </div>
                     )}
                   </div>
-                </div>
-              </motion.li>
-            ))}
+                </motion.li>
+              );
+            })}
             {day.stops.length === 0 && (
               <li className="clay-raised-sm p-4 text-sm text-muted-foreground">
                 No stops in this day — open &ldquo;Select Places &amp; Anchor&rdquo; or click Re-plan below.
@@ -1959,45 +1990,73 @@ export function PlanSheet({
           labelledBy="alt-substitute-title"
         >
           <div className="flex flex-col gap-3 p-1 max-w-lg mx-auto text-xs">
-            <h3 id="alt-substitute-title" className="font-bold text-base text-foreground">
-              🔄 Find Substitute for {selectedAltStop.name}
-            </h3>
-            <p className="text-muted-foreground text-[11px]">
-              If <strong>{selectedAltStop.name}</strong> is closed, crowded, or unavailable, choose a nearby substitute matching the same category &amp; vicinity:
-            </p>
-            <div className="flex flex-col gap-2 max-h-80 overflow-y-auto thin-scroll">
+            <div className="pr-12">
+              <h3 id="alt-substitute-title" className="font-bold text-base text-foreground">
+                🔄 Smart Substitutes for {selectedAltStop.name}
+              </h3>
+              <p className="text-muted-foreground text-[11px] mt-0.5">
+                Nearby matching places in the same vicinity. Closed venues are shown and can still be swapped in.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 max-h-80 overflow-y-auto thin-scroll pr-1">
               {altCandidates.length === 0 ? (
                 <p className="text-muted-foreground py-4 text-center">No immediate alternatives found nearby.</p>
               ) : (
-                altCandidates.map((alt) => (
-                  <div
-                    key={alt.id}
-                    className="clay-raised-sm rounded-xl p-3 flex items-center justify-between gap-3 border border-border/50 hover:border-primary/50 transition-colors"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <h4 className="font-bold text-foreground text-xs truncate">
-                        {CATEGORY_EMOJI[alt.category]} {alt.name}
-                      </h4>
-                      <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">
-                        {alt.description || alt.address}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
-                        <span>⏱️ {alt.durationMinutes}m</span>
-                        <span>·</span>
-                        <span>{alt.pricePerPerson !== undefined ? `~₹${alt.pricePerPerson} pp` : "Varies on site"}</span>
-                        {alt.community.hiddenGem && <span className="text-emerald-600 font-semibold">🌿 gem</span>}
+                altCandidates.map((alt) => {
+                  const openSt = getPlaceOpenStatus(alt.openingHoursRaw);
+                  const isClosed = openSt.badge === "closed";
+                  return (
+                    <div
+                      key={alt.id}
+                      className={cn(
+                        "rounded-xl p-3 flex items-center justify-between gap-3 border transition-all",
+                        isClosed
+                          ? "border-border/40 bg-muted/20 opacity-80 hover:opacity-100"
+                          : "border-border/60 bg-card/70 hover:border-primary/50",
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <h4 className="font-bold text-foreground text-xs truncate">
+                            {CATEGORY_EMOJI[alt.category]} {alt.name}
+                          </h4>
+                          {openSt.badge === "open" && (
+                            <span className="shrink-0 inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                              🟢 Open today
+                            </span>
+                          )}
+                          {openSt.badge === "closed" && (
+                            <span className="shrink-0 inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300">
+                              🔴 Closed today
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">
+                          {alt.description || alt.address}
+                        </p>
+                        <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
+                          <span>⏱️ {alt.durationMinutes}m</span>
+                          <span>·</span>
+                          <span>{alt.pricePerPerson !== undefined ? `~₹${alt.pricePerPerson} pp` : "Varies on site"}</span>
+                          {alt.community.hiddenGem && <span className="text-emerald-600 font-semibold">🌿 gem</span>}
+                        </div>
                       </div>
+                      <Button
+                        size="sm"
+                        variant={isClosed ? "default" : "primary"}
+                        className="shrink-0 font-bold text-xs"
+                        onClick={() => handleSwapWithAlternative(alt)}
+                      >
+                        {isClosed ? "Swap Anyway" : "Swap In"}
+                      </Button>
                     </div>
-                    <Button size="sm" variant="primary" onClick={() => handleSwapWithAlternative(alt)}>
-                      Swap In
-                    </Button>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
             <div className="flex justify-end pt-1">
               <Button variant="default" onClick={() => setSelectedAltStop(null)}>
-                Cancel
+                Close
               </Button>
             </div>
           </div>

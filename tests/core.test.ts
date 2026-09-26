@@ -1,7 +1,7 @@
 // ─── Core data-pipeline unit tests (pure functions, no network) ──────────────
 import { describe, expect, it } from "vitest";
 import { dedupKey, isBareGeoFragment, meaningfulOverlap, parseBbox, stripPossessive, tokenSim } from "@/lib/net";
-import { isVisitablePlace, normalizePlaceName, openNowFromHours } from "@/lib/pipeline";
+import { isVisitablePlace, normalizePlaceName, openNowFromHours, getPlaceOpenStatus } from "@/lib/pipeline";
 
 describe("dedupKey", () => {
   it("ignores case, accents, punctuation and word order", () => {
@@ -853,6 +853,83 @@ describe("2h Micro-Trip Generator (Short Layover / Afternoon Window)", () => {
     expect(microPlan.days[0].stops.length).toBeLessThanOrEqual(2);
     expect(microPlan.days[0].stops.length).toBeGreaterThanOrEqual(1);
     expect(microPlan.days[0].stops[0].durationMinutes).toBeLessThanOrEqual(90);
+  });
+});
+
+describe("getPlaceOpenStatus & Multi-Day Place Deduplication", () => {
+  it("evaluates open status correctly for 24/7, day-scoped, and unlisted hours", () => {
+    // 24/7
+    const st247 = getPlaceOpenStatus("24/7");
+    expect(st247.badge).toBe("open");
+    expect(st247.isOpenToday).toBe(true);
+    expect(st247.isOpenNow).toBe(true);
+
+    // Mo-Sa 10:00-18:00 on Wednesday 2:00 PM (open)
+    const wed14 = new Date(2026, 8, 9, 14, 0); // Wed Sept 9 2026
+    const stWed = getPlaceOpenStatus("Mo-Sa 10:00-18:00", wed14);
+    expect(stWed.badge).toBe("open");
+    expect(stWed.isOpenToday).toBe(true);
+    expect(stWed.isOpenNow).toBe(true);
+
+    // Mo-Sa 10:00-18:00 on Sunday 2:00 PM (closed today)
+    const sun14 = new Date(2026, 8, 13, 14, 0); // Sun Sept 13 2026
+    const stSun = getPlaceOpenStatus("Mo-Sa 10:00-18:00", sun14);
+    expect(stSun.badge).toBe("closed");
+    expect(stSun.isOpenToday).toBe(false);
+    expect(stSun.isOpenNow).toBe(false);
+    expect(stSun.label).toBe("Closed today");
+
+    // Unlisted
+    const stNone = getPlaceOpenStatus(undefined);
+    expect(stNone.badge).toBe("unknown");
+    expect(stNone.isOpenToday).toBeNull();
+  });
+
+  it("strictly enforces zero place repetition across days in a multi-day plan", async () => {
+    const candidatePlaces: Experience[] = [
+      makeExp({ id: "s1", name: "Shaniwar Wada", category: "culture", lat: 18.5195, lon: 73.8553, openingHoursRaw: "Mo-Su 09:00-18:00" }),
+      makeExp({ id: "s2", name: "Aga Khan Palace", category: "culture", lat: 18.5525, lon: 73.9015, openingHoursRaw: "Mo-Su 09:00-17:30" }),
+      makeExp({ id: "s3", name: "Pataleshwar Cave Temple", category: "culture", lat: 18.527, lon: 73.85, openingHoursRaw: "Mo-Su 08:00-17:30" }),
+      makeExp({ id: "s4", name: "Sinhagad Fort", category: "nature", lat: 18.366, lon: 73.755, durationMinutes: 180 }),
+      makeExp({ id: "s5", name: "Raja Dinkar Kelkar Museum", category: "culture", lat: 18.511, lon: 73.854 }),
+      makeExp({ id: "s6", name: "Parvati Hill Temple", category: "culture", lat: 18.497, lon: 73.847 }),
+      makeExp({ id: "s7", name: "Saras Baug", category: "nature", lat: 18.501, lon: 73.853 }),
+      makeExp({ id: "s8", name: "Vetal Tekdi", category: "nature", lat: 18.523, lon: 73.818 }),
+      makeExp({ id: "f1", name: "Goodluck Cafe Irani Chai", category: "food", lat: 18.518, lon: 73.842 }),
+      makeExp({ id: "f2", name: "Vaishali Restaurant FC Road", category: "food", lat: 18.522, lon: 73.841 }),
+      makeExp({ id: "f3", name: "George Restaurant Camp", category: "food", lat: 18.516, lon: 73.876 }),
+      makeExp({ id: "f4", name: "Blue Nile Restaurant", category: "food", lat: 18.525, lon: 73.879 }),
+    ];
+
+    const plan = await buildTripPlan(candidatePlaces, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      lat: 18.52,
+      lon: 73.85,
+      days: 2,
+      hoursPerDay: 8,
+      includeBreakfast: true,
+      includeLunch: true,
+    });
+
+    expect(plan.days.length).toBe(2);
+    const day1StopIds = plan.days[0].stops.map((s) => s.experienceId);
+    const day2StopIds = plan.days[1].stops.map((s) => s.experienceId);
+
+    // Verify day 1 and day 2 stops have ZERO overlap
+    const overlap = day1StopIds.filter((id) => day2StopIds.includes(id));
+    expect(overlap).toEqual([]);
+
+    // Total distinct IDs across all days should match total stop count
+    const allStopIds = [...day1StopIds, ...day2StopIds];
+    expect(new Set(allStopIds).size).toBe(allStopIds.length);
+
+    // Verify openStatusBadge is populated on stops with opening hours
+    const shaniwarStop = plan.days[0].stops.find((s) => s.experienceId === "s1") ??
+                         plan.days[1].stops.find((s) => s.experienceId === "s1");
+    if (shaniwarStop) {
+      expect(shaniwarStop.openStatusBadge).toBe("open");
+    }
   });
 });
 
