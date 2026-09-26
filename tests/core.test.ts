@@ -323,6 +323,45 @@ describe("Trip Planner Route Optimization & Strict Category Selection", () => {
     expect(otherStops.length).toBeGreaterThan(0);
     expect(otherStops.every((s) => s.locked === false)).toBe(true);
   });
+
+  it("forces city-type startAnchor to match target city center even if caller passed stale previous-city anchor", async () => {
+    const badlapurPlaces: Experience[] = [
+      makeExp({
+        id: "b1",
+        name: "Kondeshwar Temple",
+        category: "culture",
+        lat: 19.12,
+        lon: 73.27,
+      }),
+      makeExp({
+        id: "b2",
+        name: "Barvi Dam",
+        category: "nature",
+        lat: 19.19,
+        lon: 73.34,
+      }),
+    ];
+
+    // Simulate caller passing stale Pune Center anchor to Badlapur plan
+    const plan = await buildTripPlan(badlapurPlaces, {
+      city: "Badlapur",
+      cityLabel: "Badlapur, Maharashtra",
+      lat: 19.167,
+      lon: 73.238,
+      days: 1,
+      hoursPerDay: 8,
+      startAnchor: {
+        type: "city",
+        label: "Pune Center",
+        lat: 18.52,
+        lon: 73.855,
+      },
+    });
+
+    expect(plan.startAnchor?.label).toBe("Badlapur Center");
+    expect(plan.startAnchor?.lat).toBe(19.167);
+    expect(plan.startAnchor?.lon).toBe(73.238);
+  });
 });
 
 

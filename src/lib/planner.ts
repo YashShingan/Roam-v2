@@ -482,12 +482,15 @@ export function recomputePlanMetrics(
 export async function buildTripPlan(places: Experience[], req: PlanRequest): Promise<TripPlan> {
   const mode: TransportMode = req.transportMode ?? "walk";
   const timeMode: TimeMode = req.timeMode ?? "recommended";
-  const anchor: StartAnchor = req.startAnchor ?? {
-    type: "city",
-    label: `${req.cityLabel.split(",")[0]} Center`,
-    lat: req.lat ?? 19.2437,
-    lon: req.lon ?? 73.1355,
-  };
+  const anchor: StartAnchor =
+    req.startAnchor && req.startAnchor.type !== "city"
+      ? req.startAnchor
+      : {
+          type: "city",
+          label: `${req.cityLabel.split(",")[0]} Center`,
+          lat: req.lat ?? req.startAnchor?.lat ?? 19.2437,
+          lon: req.lon ?? req.startAnchor?.lon ?? 73.1355,
+        };
 
   const excludedSet = new Set(req.excludedPlaceIds ?? []);
   const lockedSet = new Set(req.lockedPlaceIds ?? []);

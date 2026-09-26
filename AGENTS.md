@@ -22,4 +22,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - Only stops explicitly liked (`reactions[id] === 1`) or locked (`s.locked === true`) may be sent in `lockedPlaceIds`.
    - Never default unreacted stops to locked on re-plan when dislikes exist.
    - Newly generated replacement stops from `buildTripPlan` must always be initialized with `locked: false` and neutral reaction state (`reactions[id] = 0`), so they display neutral reaction icons rather than auto-marking as "Keep".
+6. **City Switching & Start Anchor Invariant (`src/app/page.tsx`, `src/components/plan.tsx`, `src/lib/planner.ts`)**:
+   - Switching cities must invalidate or clear any active itinerary from a different city (`plan.city.toLowerCase() !== nextCity.toLowerCase()`).
+   - The `"city"` start anchor must strictly resolve to the currently selected city's geocoded center (`cityCenter.lat`, `cityCenter.lon`, and `${currentCityLabel} Center`), never falling back to a previous city's coordinates.
+   - In `buildTripPlan`, when `startAnchor.type === "city"`, always use the target city's geocoded coordinates (`req.lat`, `req.lon`) and label (`${req.cityLabel.split(",")[0]} Center`).
+
 

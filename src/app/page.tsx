@@ -206,11 +206,22 @@ export default function Home() {
       setCityOpen(false);
       setLastCity(c);
       setFocusedIdx(0);
+      const current = useRoam.getState().plan;
+      if (current && current.city.toLowerCase() !== c.toLowerCase()) {
+        setPlan(null);
+      }
       void lat;
       void lon;
     },
-    [setLastCity],
+    [setLastCity, setPlan],
   );
+
+  // If active city does not match the persisted plan, clear stale plan so routes don't cross cities
+  useEffect(() => {
+    if (city && plan && plan.city.toLowerCase() !== city.toLowerCase()) {
+      setPlan(null);
+    }
+  }, [city, plan, setPlan]);
 
   const replan = useCallback(
     async (
@@ -644,6 +655,8 @@ export default function Home() {
         onViewOnMap={() => setView("map")}
         places={places}
         activeCategories={filters.categories}
+        currentCity={city}
+        currentCityLabel={placesQuery.data?.cityLabel ?? city}
         cityCenter={
           placesQuery.data ? { lat: placesQuery.data.lat, lon: placesQuery.data.lon } : undefined
         }

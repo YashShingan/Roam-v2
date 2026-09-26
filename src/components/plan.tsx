@@ -94,6 +94,8 @@ export function PlanSheet({
   places = [],
   activeCategories = [],
   cityCenter,
+  currentCity,
+  currentCityLabel,
 }: {
   open: boolean;
   onClose: () => void;
@@ -103,6 +105,8 @@ export function PlanSheet({
   places?: Experience[];
   activeCategories?: Category[];
   cityCenter?: { lat: number; lon: number };
+  currentCity?: string;
+  currentCityLabel?: string;
 }) {
   const plan = useRoam((s) => s.plan);
   const patchPlan = useRoam((s) => s.patchPlan);
@@ -139,9 +143,12 @@ export function PlanSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCategories]);
 
-  // Sync selectedPlaceIds with current plan's stops when plan loads
+  const isPlanSameCity =
+    !plan || !currentCity || plan.city.toLowerCase() === currentCity.toLowerCase();
+
+  // Sync selectedPlaceIds with current plan's stops when plan loads for the active city
   useEffect(() => {
-    if (plan) {
+    if (plan && isPlanSameCity) {
       const stopIds = plan.days.flatMap((d) => d.stops.map((s) => s.experienceId));
       setSelectedPlaceIds(stopIds);
       setHasCustomPlaceSelection(false);
@@ -159,11 +166,15 @@ export function PlanSheet({
         setAnchorType(plan.startAnchor.type);
         if (plan.startAnchor.placeId) setAnchorPlaceId(plan.startAnchor.placeId);
       }
+    } else if (!isPlanSameCity) {
+      setSelectedPlaceIds([]);
+      setAnchorType("city");
+      setReactions({});
     } else if (savedIds.length > 0 && selectedPlaceIds.length === 0) {
       setSelectedPlaceIds(savedIds);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan?.id]);
+  }, [plan?.id, currentCity, isPlanSameCity]);
 
   // Candidate places filtered strictly by selectedCats
   const candidatePlaces = useMemo(() => {
@@ -172,8 +183,12 @@ export function PlanSheet({
   }, [places, selectedCats]);
 
   const resolveStartAnchor = (): StartAnchor => {
-    const fallbackLat = plan?.lat ?? cityCenter?.lat ?? 19.2437;
-    const fallbackLon = plan?.lon ?? cityCenter?.lon ?? 73.1355;
+    const activeCityLabel =
+      (isPlanSameCity ? plan?.cityLabel : undefined) ?? currentCityLabel ?? currentCity ?? "City";
+    const fallbackLat =
+      cityCenter?.lat ?? (isPlanSameCity ? plan?.lat : undefined) ?? 19.2437;
+    const fallbackLon =
+      cityCenter?.lon ?? (isPlanSameCity ? plan?.lon : undefined) ?? 73.1355;
     if (anchorType === "gps" && gpsCoords) {
       return {
         type: "gps",
@@ -196,7 +211,7 @@ export function PlanSheet({
     }
     return {
       type: "city",
-      label: `${(plan?.cityLabel ?? "City").split(",")[0]} Center`,
+      label: `${activeCityLabel.split(",")[0]} Center`,
       lat: fallbackLat,
       lon: fallbackLon,
     };
