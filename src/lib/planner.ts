@@ -33,6 +33,9 @@ export interface PlanRequest {
   transportMode?: TransportMode;
   timeMode?: TimeMode;
   startAnchor?: StartAnchor;
+  includeBreakfast?: boolean;
+  includeLunch?: boolean;
+  includeDinner?: boolean;
 }
 
 export interface ScoredPlace {
@@ -90,6 +93,29 @@ export function scorePlaces(
       return { exp, score, fit };
     })
     .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Detects whether a place or itinerary stop requires heavy human physical exertion
+ * (e.g. 3+ hour trek, fort climb, summit trail, waterfall hike).
+ */
+export function isHighExertionStop(s: {
+  name: string;
+  category?: Category;
+  durationMinutes?: number;
+  description?: string;
+  tags?: string[];
+}): boolean {
+  if ((s.durationMinutes ?? 0) >= 180) return true;
+  const text = `${s.name} ${s.description ?? ""} ${(s.tags ?? []).join(" ")}`.toLowerCase();
+  const trekPattern = /\b(trek|hike|climb|fort|summit|ghat|waterfall|peak|trail|kila|gad)\b/i;
+  if ((s.category === "nature" || s.category === "adventure") && trekPattern.test(text)) {
+    return true;
+  }
+  if ((s.durationMinutes ?? 0) >= 120 && trekPattern.test(text)) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -347,17 +373,27 @@ export function recomputePlanMetrics(
       dayTravelMin += s.travelMinFromPrev;
       dayDistKm += s.legKmFromPrev;
 
+      if (s.isHighExertion === undefined) {
+        s.isHighExertion = isHighExertionStop(s);
+      }
+      if (s.isHighExertion && !s.exertionReason) {
+        s.exertionReason = "Strenuous climb / trek (3+ hrs) — high exertion";
+      }
+
       if (opts.reslot !== false) {
         clock += s.travelMinFromPrev;
         const start = clock;
         const end = clock + (s.durationMinutes || 60);
-        clock = end + 10; // 10-min buffer between stops
+        // Human stamina: 45-min recovery & chai buffer after high-exertion treks, 10-min standard buffer otherwise
+        const recoveryBuffer = s.isHighExertion ? 45 : 10;
+        clock = end + recoveryBuffer;
         s.slotStart = fmtSlot(start);
         s.slotEnd = fmtSlot(end);
 
         const startH = Math.floor(start / 60);
         let tod = "afternoon";
-        if (startH < 12) tod = "morning";
+        if (startH < 11 && s.category === "food") tod = "breakfast";
+        else if (startH < 12) tod = "morning";
         else if (startH >= 12 && startH < 15 && s.category === "food") tod = "lunch";
         else if (startH >= 12 && startH < 17) tod = "afternoon";
         else if (startH >= 17 && startH < 19) tod = "sunset";
@@ -388,6 +424,19 @@ export function recomputePlanMetrics(
           ? `https://www.google.com/maps/dir/?api=1&origin=${prevPt}&destination=${s.lat},${s.lon}&travelmode=${tm}`
           : `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}&travelmode=${tm}`;
       }
+    }
+
+    const firstTrekIdx = day.stops.findIndex((st) => st.isHighExertion);
+    if (firstTrekIdx >= 0) {
+      day.highExertionTrekDetected = true;
+      day.exertionStopName = day.stops[firstTrekIdx].name;
+      day.exertionStopIndex = firstTrekIdx;
+      day.remainingStopsAfterTrekCount = Math.max(0, day.stops.length - 1 - firstTrekIdx);
+    } else {
+      day.highExertionTrekDetected = false;
+      day.exertionStopName = undefined;
+      day.exertionStopIndex = undefined;
+      day.remainingStopsAfterTrekCount = 0;
     }
 
     const visitMinutes = day.stops.reduce((acc, st) => acc + (st.durationMinutes || 0), 0);
@@ -507,6 +556,9 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
     }
   } else if (req.interests && req.interests.length > 0 && req.strictCategories !== false) {
     const catSet = new Set(req.interests);
+    if (req.includeBreakfast || req.includeLunch || req.includeDinner) {
+      catSet.add("food");
+    }
     const matching = candidatePool.filter((p) => catSet.has(p.category) || lockedSet.has(p.id));
     if (matching.length > 0) {
       candidatePool = matching;
@@ -537,7 +589,12 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
   const hasExplicitSelection = !!(req.selectedPlaceIds && req.selectedPlaceIds.length > 0);
   const allowFoodAnchors =
     !hasExplicitSelection &&
-    (!req.interests || req.interests.length === 0 || req.interests.includes("food"));
+    (req.includeBreakfast ||
+      req.includeLunch ||
+      req.includeDinner ||
+      !req.interests ||
+      req.interests.length === 0 ||
+      req.interests.includes("food"));
 
   const dayCapacityMin = timeMode === "recommended" ? 10 * 60 : req.hoursPerDay * 60;
   const maxStopsPerDay = hasExplicitSelection
@@ -693,6 +750,7 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
       );
       void open;
 
+      const isHighEx = isHighExertionStop(exp);
       stops.push({
         experienceId: exp.id,
         name: exp.name,
@@ -713,6 +771,8 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
         imageUrl: exp.imageUrl,
         timeOfDay: "morning",
         locked: lockedSet.has(exp.id),
+        isHighExertion: isHighEx,
+        exertionReason: isHighEx ? "Strenuous climb / trek (3+ hrs) — high exertion" : undefined,
       });
     }
 
@@ -758,6 +818,9 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
     shareUrl: `/trip/${id}`,
     votes: {},
     goldenHourNotes: goldenNotes,
+    includeBreakfast: req.includeBreakfast,
+    includeLunch: req.includeLunch,
+    includeDinner: req.includeDinner,
   };
 
   return recomputePlanMetrics(initialPlan, { reslot: true, hoursPerDayCap: req.hoursPerDay });

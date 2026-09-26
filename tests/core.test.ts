@@ -117,13 +117,14 @@ describe("isBareGeoFragment / stripPossessive (mined-junk gate)", () => {
   });
 });
 
-import { parsePriceSnippets, aggregatePriceHint, deriveStopPriceInfo } from "@/lib/price-engine";
+import { parsePriceSnippets, aggregatePriceHint, deriveStopPriceInfo, CATEGORY_TYPICAL_PRICES } from "@/lib/price-engine";
 import {
   buildTripPlan,
   optimizeDayRoute,
   recomputePlanMetrics,
   buildMultiStopGmapsUrl,
   durationMinutesFromKm,
+  isHighExertionStop,
 } from "@/lib/planner";
 import type { Experience } from "@/lib/types";
 
@@ -162,6 +163,30 @@ describe("Price Intelligence Engine (TS)", () => {
     const info = deriveStopPriceInfo({ priceHint: null, pricePerPerson: undefined, priceIsEstimate: true });
     expect(info.priceBasis).toBe("Varies — no reliable signal");
     expect(info.priceMin).toBeUndefined();
+  });
+
+  it("provides Google Maps style typical min-max brackets when category is known but crawled snippets are absent", () => {
+    const natureInfo = deriveStopPriceInfo({ priceHint: null, category: "nature" });
+    expect(natureInfo.priceMin).toBe(0);
+    expect(natureInfo.priceMax).toBe(0);
+    expect(natureInfo.priceBasis).toBe("Free entry");
+    expect(natureInfo.isCategoryTypical).toBe(true);
+
+    const foodInfo = deriveStopPriceInfo({ priceHint: null, category: "food" });
+    expect(foodInfo.priceMin).toBe(150);
+    expect(foodInfo.priceMax).toBe(350);
+    expect(foodInfo.priceBasis).toContain("₹150–₹350 pp");
+    expect(foodInfo.isCategoryTypical).toBe(true);
+
+    const cultureInfo = deriveStopPriceInfo({ priceHint: null, category: "culture" });
+    expect(cultureInfo.priceMin).toBe(20);
+    expect(cultureInfo.priceMax).toBe(50);
+    expect(cultureInfo.isCategoryTypical).toBe(true);
+
+    const adventureInfo = deriveStopPriceInfo({ priceHint: null, category: "adventure" });
+    expect(adventureInfo.priceMin).toBe(300);
+    expect(adventureInfo.priceMax).toBe(800);
+    expect(adventureInfo.isCategoryTypical).toBe(true);
   });
 });
 
@@ -219,11 +244,11 @@ describe("Trip Planner Route Optimization & Strict Category Selection", () => {
     expect(stops.length).toBe(3);
     expect(stops.every((s) => s.category === "culture")).toBe(true);
     expect(stops.some((s) => s.category === "food")).toBe(false);
-    // Check price band (c1: 25, c2: 50, c3: unpriced)
-    expect(plan.budgetBand?.min).toBe(75);
-    expect(plan.budgetBand?.max).toBe(75);
-    expect(plan.budgetBand?.pricedCount).toBe(2);
-    expect(plan.budgetBand?.unpricedCount).toBe(1);
+    // Check price band (c1: 25, c2: 50, c3: typical culture entry 20–50)
+    expect(plan.budgetBand?.min).toBe(95);
+    expect(plan.budgetBand?.max).toBe(125);
+    expect(plan.budgetBand?.pricedCount).toBe(3);
+    expect(plan.budgetBand?.unpricedCount).toBe(0);
   });
 
   it("orders stops geographically from startAnchor via 2-opt without cross-city backtracking", () => {
@@ -361,6 +386,121 @@ describe("Trip Planner Route Optimization & Strict Category Selection", () => {
     expect(plan.startAnchor?.label).toBe("Badlapur Center");
     expect(plan.startAnchor?.lat).toBe(19.167);
     expect(plan.startAnchor?.lon).toBe(73.238);
+  });
+
+  it("detects strenuous treks and injects 45-min post-climb biological recovery buffer", () => {
+    expect(isHighExertionStop({ name: "Sinhagad Fort Climb", durationMinutes: 180, category: "adventure" })).toBe(true);
+    expect(isHighExertionStop({ name: "Khanderi Fort Sea Trek", durationMinutes: 90, category: "adventure" })).toBe(true);
+    expect(isHighExertionStop({ name: "Raja Dinkar Kelkar Museum", durationMinutes: 60, category: "culture" })).toBe(false);
+
+    // Mock a plan with a trek followed by an afternoon museum visit
+    const mockPlan = {
+      id: "test-trek",
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      lat: 18.52,
+      lon: 73.855,
+      days: [
+        {
+          day: 1,
+          date: "2026-09-26",
+          theme: "Adventure & Heritage",
+          stops: [
+            {
+              experienceId: "trek1",
+              name: "Sinhagad Fort Trek",
+              category: "adventure" as const,
+              durationMinutes: 180,
+              lat: 18.366,
+              lon: 73.755,
+              slotStart: "09:00",
+              slotEnd: "12:00",
+              isHighExertion: true,
+              travelMinFromPrev: 0,
+            },
+            {
+              experienceId: "cult1",
+              name: "Kelkar Museum",
+              category: "culture" as const,
+              durationMinutes: 60,
+              lat: 18.51,
+              lon: 73.85,
+              slotStart: "12:10",
+              slotEnd: "13:10",
+              travelMinFromPrev: 15,
+            },
+          ],
+          totalHours: 4.5,
+        },
+      ],
+      totalDays: 1,
+      totalCost: 0,
+      createdAt: "2026-09-26T00:00:00Z",
+      voiceSummary: "",
+      shareUrl: "",
+      feasibility: { ok: true, message: "Pacing looks good" },
+    };
+
+    const recomputed = recomputePlanMetrics(mockPlan);
+    const day1 = recomputed.days[0];
+
+    // High exertion trek should be detected with fatigue indicators
+    expect(day1.highExertionTrekDetected).toBe(true);
+    expect(day1.exertionStopName).toBe("Sinhagad Fort Trek");
+    expect(day1.remainingStopsAfterTrekCount).toBe(1);
+
+    // Stop 0: 09:00 - 12:00
+    expect(day1.stops[0].slotStart).toBe("09:00");
+    expect(day1.stops[0].slotEnd).toBe("12:00");
+
+    // Stop 1 should account for 45-min recovery buffer + 15 min travel:
+    // 12:00 + 45 min rest = 12:45, + 15 min travel = 13:00 (1:00 PM)
+    expect(day1.stops[1].slotStart).toBe("13:00");
+  });
+
+  it("slots food places into itinerary when meal anchors (breakfast/lunch/dinner) are selected", async () => {
+    const placesWithFood: Experience[] = [
+      makeExp({
+        id: "m1",
+        name: "Shaniwar Wada",
+        category: "culture",
+        lat: 18.5195,
+        lon: 73.8553,
+        durationMinutes: 90,
+      }),
+      makeExp({
+        id: "f1",
+        name: "Vaishali Restaurant",
+        category: "food",
+        lat: 18.5222,
+        lon: 73.8415,
+        durationMinutes: 60,
+      }),
+      makeExp({
+        id: "m2",
+        name: "Lal Mahal",
+        category: "culture",
+        lat: 18.5186,
+        lon: 73.8565,
+        durationMinutes: 60,
+      }),
+    ];
+
+    const plan = await buildTripPlan(placesWithFood, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      lat: 18.52,
+      lon: 73.855,
+      days: 1,
+      hoursPerDay: 8,
+      includeLunch: true,
+      interests: ["culture"], // Culture interest, but lunch meal anchor is enabled
+    });
+
+    const stops = plan.days[0].stops;
+    expect(stops.some((s) => s.category === "food")).toBe(true);
+    const foodStop = stops.find((s) => s.category === "food");
+    expect(foodStop?.name).toBe("Vaishali Restaurant");
   });
 });
 

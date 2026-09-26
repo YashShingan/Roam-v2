@@ -2,7 +2,7 @@
 
 // ─── UI primitives: clay buttons, chips, dialogs, sheets, sliders, skeletons ─
 import { AnimatePresence, motion } from "framer-motion";
-import { X } from "lucide-react";
+import { Maximize2, Minimize2, X } from "lucide-react";
 import { Component, useEffect, useRef, useState, type ReactNode , useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 
@@ -151,6 +151,8 @@ export function Modal({
   labelledBy,
   wide,
   side,
+  maximized,
+  onToggleMaximize,
 }: {
   open: boolean;
   onClose: () => void;
@@ -158,6 +160,8 @@ export function Modal({
   labelledBy?: string;
   wide?: boolean;
   side?: boolean;
+  maximized?: boolean;
+  onToggleMaximize?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -224,27 +228,41 @@ export function Modal({
             role="dialog"
             aria-modal="true"
             aria-labelledby={labelledBy}
-            initial={side ? { x: "100%" } : { y: 60, opacity: 0, scale: 0.97 }}
-            animate={side ? { x: 0 } : { y: 0, opacity: 1, scale: 1 }}
-            exit={side ? { x: "100%" } : { y: 40, opacity: 0, scale: 0.98 }}
+            initial={side && !maximized ? { x: "100%" } : { y: 60, opacity: 0, scale: 0.97 }}
+            animate={side && !maximized ? { x: 0 } : { y: 0, opacity: 1, scale: 1 }}
+            exit={side && !maximized ? { x: "100%" } : { y: 40, opacity: 0, scale: 0.98 }}
             transition={SPRING}
             className={cn(
-              "relative clay-raised-lg bg-card overflow-hidden flex flex-col",
-              side
-                ? "h-full w-full max-w-md ml-auto rounded-none sm:rounded-l-[26px]"
-                : cn(
-                    "w-full max-h-[95dvh] sm:max-h-[88dvh] rounded-t-[26px] sm:rounded-[26px]",
-                    wide ? "max-w-3xl" : "max-w-lg",
-                  ),
+              "relative clay-raised-lg bg-card overflow-hidden flex flex-col transition-all duration-300",
+              maximized
+                ? "h-[92dvh] w-full max-w-6xl mx-auto rounded-[26px] shadow-2xl"
+                : side
+                  ? "h-full w-full max-w-md ml-auto rounded-none sm:rounded-l-[26px]"
+                  : cn(
+                      "w-full max-h-[95dvh] sm:max-h-[88dvh] rounded-t-[26px] sm:rounded-[26px]",
+                      wide ? "max-w-3xl" : "max-w-lg",
+                    ),
             )}
           >
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              className="absolute top-3 right-3 z-10 h-10 w-10 clay-raised-sm rounded-full flex items-center justify-center hover:clay-pressed active:scale-95 transition-transform"
-            >
-              <X size={18} />
-            </button>
+            <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5">
+              {onToggleMaximize && (
+                <button
+                  onClick={onToggleMaximize}
+                  aria-label={maximized ? "Restore side sheet" : "Maximize planner"}
+                  title={maximized ? "Restore side sheet" : "Maximize planner"}
+                  className="h-10 w-10 clay-raised-sm rounded-full flex items-center justify-center hover:clay-pressed active:scale-95 transition-transform text-muted-foreground hover:text-foreground"
+                >
+                  {maximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                aria-label="Close"
+                className="h-10 w-10 clay-raised-sm rounded-full flex items-center justify-center hover:clay-pressed active:scale-95 transition-transform text-muted-foreground hover:text-foreground"
+              >
+                <X size={18} />
+              </button>
+            </div>
             {children}
           </motion.div>
         </motion.div>

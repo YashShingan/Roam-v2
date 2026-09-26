@@ -130,6 +130,8 @@ export interface ItineraryStop {
   gmapsDirectionsUrl?: string;
   imageUrl?: string;
   timeOfDay?: string;
+  isHighExertion?: boolean;
+  exertionReason?: string;
 }
 
 export interface TripDay {
@@ -138,6 +140,10 @@ export interface TripDay {
   totalHours: number;
   walkKm?: number;
   driveKm?: number;
+  highExertionTrekDetected?: boolean;
+  exertionStopName?: string;
+  exertionStopIndex?: number;
+  remainingStopsAfterTrekCount?: number;
 }
 
 export interface TripPlan {
@@ -167,6 +173,9 @@ export interface TripPlan {
   shareUrl: string;
   votes?: Record<string, number>;
   goldenHourNotes?: string[];
+  includeBreakfast?: boolean;
+  includeLunch?: boolean;
+  includeDinner?: boolean;
 }
 
 // ─── Voice assistant ─────────────────────────────────────────────────────────

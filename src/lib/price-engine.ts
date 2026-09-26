@@ -371,6 +371,20 @@ export function aggregatePriceHint(
   };
 }
 
+export const CATEGORY_TYPICAL_PRICES: Record<
+  Category,
+  { min: number; max: number; mode: string; basis: string }
+> = {
+  nature: { min: 0, max: 0, mode: "entry", basis: "Free entry" },
+  culture: { min: 20, max: 50, mode: "entry", basis: "₹20–₹50 pp (Typical entry)" },
+  food: { min: 150, max: 350, mode: "meal", basis: "₹150–₹350 pp (Casual dining)" },
+  adventure: { min: 300, max: 800, mode: "adventure", basis: "₹300–₹800 pp (Typical)" },
+  market: { min: 200, max: 800, mode: "item", basis: "₹200–₹800 (Typical)" },
+  nightlife: { min: 400, max: 1200, mode: "activity", basis: "₹400–₹1,200 pp (Typical)" },
+  workshop: { min: 300, max: 1000, mode: "workshop", basis: "₹300–₹1,000 (Typical)" },
+  hidden_gem: { min: 50, max: 200, mode: "entry", basis: "₹50–₹200 pp (Typical)" },
+};
+
 export function deriveStopPriceInfo(exp: {
   priceHint?: PriceHint | null;
   pricePerPerson?: number;
@@ -382,6 +396,7 @@ export function deriveStopPriceInfo(exp: {
   priceMax?: number;
   pricePerPerson?: number;
   priceQuote?: string;
+  isCategoryTypical?: boolean;
 } {
   if (exp.priceHint) {
     const h = exp.priceHint;
@@ -406,6 +421,7 @@ export function deriveStopPriceInfo(exp: {
       priceMax: max,
       pricePerPerson: pp,
       priceQuote: h.samples?.[0]?.raw_snippet ?? undefined,
+      isCategoryTypical: false,
     };
   }
 
@@ -416,6 +432,29 @@ export function deriveStopPriceInfo(exp: {
       priceMin: val,
       priceMax: val,
       pricePerPerson: val,
+      isCategoryTypical: false,
+    };
+  }
+
+  if (exp.category && CATEGORY_TYPICAL_PRICES[exp.category]) {
+    const bracket = CATEGORY_TYPICAL_PRICES[exp.category];
+    return {
+      priceBasis: bracket.basis,
+      priceMin: bracket.min,
+      priceMax: bracket.max,
+      pricePerPerson: Math.round((bracket.min + bracket.max) / 2),
+      isCategoryTypical: true,
+    };
+  }
+
+  if (exp.pricePerPerson !== undefined && exp.pricePerPerson !== null) {
+    const val = Math.round(exp.pricePerPerson);
+    return {
+      priceBasis: val === 0 ? "Free entry" : `~₹${val} pp (est.)`,
+      priceMin: val,
+      priceMax: val,
+      pricePerPerson: val,
+      isCategoryTypical: false,
     };
   }
 
@@ -425,5 +464,6 @@ export function deriveStopPriceInfo(exp: {
     priceMax: undefined,
     pricePerPerson: undefined,
     priceQuote: undefined,
+    isCategoryTypical: false,
   };
 }

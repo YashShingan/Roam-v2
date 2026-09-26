@@ -10,6 +10,7 @@ import { haversineKm } from "@/lib/net";
 import { translate, type DictKey } from "@/lib/i18n";
 import { useRoam } from "@/lib/store";
 import { CATEGORY_LABEL, CATEGORY_EMOJI } from "@/lib/catalog";
+import { deriveStopPriceInfo } from "@/lib/price-engine";
 import { HeatStrip, Sparkline, cn, SPRING } from "./ui";
 
 export { CATEGORY_EMOJI };
@@ -272,20 +273,11 @@ export function PlaceCard({
 
 export function PriceChip({ exp }: { exp: Experience }) {
   const hint = exp.priceHint;
-  if (!hint && (exp.pricePerPerson === undefined || exp.pricePerPerson === null)) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground font-medium" title="No reliable price signal found yet">
-        <span className="h-2 w-2 rounded-full bg-muted-foreground/35 shrink-0" />
-        <span className="truncate">Varies — no reliable signal</span>
-      </span>
-    );
-  }
-
   const fmt = (v: number) =>
     new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(Math.round(v / 10) * 10);
 
-  let label = "";
   if (hint) {
+    let label = "";
     if (hint.min === 0 && hint.max === 0) {
       label = "Free entry";
     } else if (hint.min === hint.max) {
@@ -296,22 +288,57 @@ export function PriceChip({ exp }: { exp: Experience }) {
     if (hint.samples && hint.samples.length > 0) {
       label += ` · ${hint.samples.length} mention${hint.samples.length > 1 ? "s" : ""}`;
     }
-  } else if (exp.pricePerPerson === 0) {
-    label = "Free entry";
-  } else {
-    label = `${fmt(exp.pricePerPerson ?? 0)} · est.`;
+    const conf = hint.confidence ?? 0.8;
+    const dotColor = conf >= 0.7 ? "bg-emerald-500" : conf >= 0.3 ? "bg-amber-500" : "bg-muted-foreground/40";
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground/90 max-w-[190px] sm:max-w-[210px] truncate"
+        title={hint.samples?.[0]?.raw_snippet ?? label}
+      >
+        <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />
+        <span className="truncate">{label}</span>
+      </span>
+    );
   }
 
-  const conf = hint?.confidence ?? (exp.priceIsEstimate ? 0.4 : 0.8);
-  const dotColor = conf >= 0.7 ? "bg-emerald-500" : conf >= 0.3 ? "bg-amber-500" : "bg-muted-foreground/40";
+  if (exp.pricePerPerson !== undefined && exp.pricePerPerson !== null && !exp.priceIsEstimate) {
+    const label = exp.pricePerPerson === 0 ? "Free entry" : `${fmt(exp.pricePerPerson)} pp`;
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground/90 max-w-[190px] sm:max-w-[210px] truncate"
+        title={label}
+      >
+        <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+        <span className="truncate">{label}</span>
+      </span>
+    );
+  }
+
+  const derived = deriveStopPriceInfo(exp);
+  if (derived.priceMin !== undefined && derived.priceMax !== undefined) {
+    const isFree = derived.priceMin === 0 && derived.priceMax === 0;
+    const label = isFree
+      ? "Free entry"
+      : derived.priceMin === derived.priceMax
+        ? `~₹${derived.priceMin} pp`
+        : `₹${derived.priceMin}–${derived.priceMax} pp`;
+    const dotColor = isFree ? "bg-emerald-500" : derived.isCategoryTypical ? "bg-teal-500" : "bg-amber-500";
+    const title = derived.isCategoryTypical ? `${derived.priceBasis} (category benchmark)` : label;
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground/90 max-w-[190px] sm:max-w-[210px] truncate"
+        title={title}
+      >
+        <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />
+        <span className="truncate">{label}</span>
+      </span>
+    );
+  }
 
   return (
-    <span
-      className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground/90 max-w-[190px] sm:max-w-[210px] truncate"
-      title={hint?.samples?.[0]?.raw_snippet ?? label}
-    >
-      <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />
-      <span className="truncate">{label}</span>
+    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground font-medium" title="Price varies on site">
+      <span className="h-2 w-2 rounded-full bg-muted-foreground/35 shrink-0" />
+      <span className="truncate">Varies on site</span>
     </span>
   );
 }

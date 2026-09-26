@@ -26,5 +26,15 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - Switching cities must invalidate or clear any active itinerary from a different city (`plan.city.toLowerCase() !== nextCity.toLowerCase()`).
    - The `"city"` start anchor must strictly resolve to the currently selected city's geocoded center (`cityCenter.lat`, `cityCenter.lon`, and `${currentCityLabel} Center`), never falling back to a previous city's coordinates.
    - In `buildTripPlan`, when `startAnchor.type === "city"`, always use the target city's geocoded coordinates (`req.lat`, `req.lon`) and label (`${req.cityLabel.split(",")[0]} Center`).
+7. **Realistic Price Brackets & Category Defaults (`src/lib/price-engine.ts`, `src/components/cards.tsx`)**:
+   - When exact quotes or crawled price hints exist, use them.
+   - When raw snippets are missing, fall back to realistic Google Maps/Zomato typical category price brackets (`Free entry` for nature/temples, `₹150–₹350 pp` for food, `₹20–₹50 pp` for culture/monuments, `₹300–₹800 pp` for adventure) instead of leaving places unpriced.
+8. **Emotion-Aware Trek & Fatigue Pacing (`src/lib/planner.ts`, `src/components/plan.tsx`)**:
+   - Strenuous treks/climbs (`durationMinutes >= 180` or matching `/trek|hike|climb|fort|summit|ghat|waterfall|peak/i`) must inject an automatic 45-minute biological recovery & chai buffer.
+   - When heavy afternoon stops remain after a climb, the engine must offer a 1-click action to move remaining stops to Day 2 to preserve human stamina.
+9. **First-Class Meal Anchors (`src/lib/planner.ts`, `src/components/plan.tsx`)**:
+   - Breakfast (~8:30–9:30 AM), Lunch (~12:30–2:30 PM), and Dinner (~7:30–9:30 PM) toggles slot authentic local eateries en-route into the daily schedule.
+10. **Adaptive Planner Workspace (`src/components/ui.tsx`, `src/components/plan.tsx`)**:
+   - Day planner modal must support toggling between a compact side drawer and a maximized 2-column cockpit (Interactive Route Map + stats on left, scrollable itinerary timeline on right).
 
 

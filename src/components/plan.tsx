@@ -83,6 +83,9 @@ export interface ReplanOptions {
   timeMode?: TimeMode;
   startAnchor?: StartAnchor;
   vibe?: Vibe;
+  includeBreakfast?: boolean;
+  includeLunch?: boolean;
+  includeDinner?: boolean;
 }
 
 export function PlanSheet({
@@ -133,6 +136,10 @@ export function PlanSheet({
   const [editingStopIdx, setEditingStopIdx] = useState<number | null>(null);
   const [qr, setQr] = useState<string | null>(null);
   const [reactions, setReactions] = useState<Record<string, 1 | -1 | 0>>({});
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [includeBreakfast, setIncludeBreakfast] = useState(plan?.includeBreakfast ?? false);
+  const [includeLunch, setIncludeLunch] = useState(plan?.includeLunch ?? true);
+  const [includeDinner, setIncludeDinner] = useState(plan?.includeDinner ?? false);
   const speakingRef = useRef(false);
 
   // Sync local categories when main grid filter changes and no custom categories set yet
@@ -162,6 +169,9 @@ export function PlanSheet({
       setReactions(nextReactions);
       if (plan.transportMode) setTransportMode(plan.transportMode);
       if (plan.timeMode) setTimeMode(plan.timeMode);
+      if (plan.includeBreakfast !== undefined) setIncludeBreakfast(plan.includeBreakfast);
+      if (plan.includeLunch !== undefined) setIncludeLunch(plan.includeLunch);
+      if (plan.includeDinner !== undefined) setIncludeDinner(plan.includeDinner);
       if (plan.startAnchor) {
         setAnchorType(plan.startAnchor.type);
         if (plan.startAnchor.placeId) setAnchorPlaceId(plan.startAnchor.placeId);
@@ -300,6 +310,9 @@ export function PlanSheet({
       timeMode: overrides?.timeMode ?? timeMode,
       startAnchor: overrides?.startAnchor ?? resolveStartAnchor(),
       vibe: overrides?.vibe ?? (selectedVibe === "all" ? undefined : (selectedVibe as Vibe)),
+      includeBreakfast: overrides?.includeBreakfast ?? includeBreakfast,
+      includeLunch: overrides?.includeLunch ?? includeLunch,
+      includeDinner: overrides?.includeDinner ?? includeDinner,
     });
   };
 
@@ -386,7 +399,14 @@ export function PlanSheet({
   // ── Empty state: Interactive Route Builder ("Select Places → Form Route") ──
   if (!plan) {
     return (
-      <Modal open={open} onClose={onClose} labelledBy="plan-title" side>
+      <Modal
+        open={open}
+        onClose={onClose}
+        labelledBy="plan-title"
+        side
+        maximized={isMaximized}
+        onToggleMaximize={() => setIsMaximized((v) => !v)}
+      >
         <div className="thin-scroll flex h-full flex-col overflow-y-auto p-4 sm:p-5 space-y-4">
           <div>
             <h2 id="plan-title" className="text-xl font-bold flex items-center gap-2">
@@ -537,7 +557,73 @@ export function PlanSheet({
             </div>
           </div>
 
-          {/* 4. Transport & Time Mode */}
+          {/* 4. Meal Anchors */}
+          <div className="clay-raised-sm p-3.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-muted-foreground flex items-center gap-1.5">
+                🍽️ Meal Stops En Route
+              </span>
+              <span className="text-[10px] text-muted-foreground">Auto-slots authentic local food</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5 pt-1">
+              <label
+                className={cn(
+                  "flex flex-col items-center justify-center p-2 rounded-xl text-center cursor-pointer border transition-colors",
+                  includeBreakfast
+                    ? "bg-amber-500/15 border-amber-500/40 text-foreground font-bold"
+                    : "bg-surface border-transparent text-muted-foreground hover:bg-surface/80",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={includeBreakfast}
+                  onChange={(e) => setIncludeBreakfast(e.target.checked)}
+                  className="sr-only"
+                />
+                <span className="text-sm">🌅</span>
+                <span className="text-[11px] mt-0.5">Breakfast</span>
+                <span className="text-[9px] text-muted-foreground">~8:30 AM</span>
+              </label>
+              <label
+                className={cn(
+                  "flex flex-col items-center justify-center p-2 rounded-xl text-center cursor-pointer border transition-colors",
+                  includeLunch
+                    ? "bg-orange-500/15 border-orange-500/40 text-foreground font-bold"
+                    : "bg-surface border-transparent text-muted-foreground hover:bg-surface/80",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={includeLunch}
+                  onChange={(e) => setIncludeLunch(e.target.checked)}
+                  className="sr-only"
+                />
+                <span className="text-sm">🍛</span>
+                <span className="text-[11px] mt-0.5">Lunch</span>
+                <span className="text-[9px] text-muted-foreground">~1:00 PM</span>
+              </label>
+              <label
+                className={cn(
+                  "flex flex-col items-center justify-center p-2 rounded-xl text-center cursor-pointer border transition-colors",
+                  includeDinner
+                    ? "bg-red-500/15 border-red-500/40 text-foreground font-bold"
+                    : "bg-surface border-transparent text-muted-foreground hover:bg-surface/80",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={includeDinner}
+                  onChange={(e) => setIncludeDinner(e.target.checked)}
+                  className="sr-only"
+                />
+                <span className="text-sm">🍽️</span>
+                <span className="text-[11px] mt-0.5">Dinner</span>
+                <span className="text-[9px] text-muted-foreground">~8:00 PM</span>
+              </label>
+            </div>
+          </div>
+
+          {/* 5. Transport & Time Mode */}
           <div className="clay-raised-sm p-3.5 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-bold text-muted-foreground">Mode:</span>
@@ -655,6 +741,39 @@ export function PlanSheet({
     })();
   };
 
+  const shiftTrekRemainingToDay2 = (fromDayIdx: number, splitStopIdx: number): void => {
+    if (!plan || !plan.days[fromDayIdx]) return;
+    const next: TripPlan = structuredClone(plan);
+    const fromDay = next.days[fromDayIdx];
+    const movingStops = fromDay.stops.splice(splitStopIdx);
+    if (movingStops.length === 0) return;
+
+    const targetDayIdx = fromDayIdx + 1;
+    if (!next.days[targetDayIdx]) {
+      next.days.push({
+        stops: [],
+        totalHours: 0,
+        walkKm: 0,
+      });
+    }
+    next.days[targetDayIdx].stops.push(...movingStops);
+    setDays(next.days.length);
+
+    toast.success(`Moved ${movingStops.length} stops to Day ${targetDayIdx + 1} for post-trek rest!`);
+
+    const immediate = recomputePlanMetrics(next, { reslot: true, hoursPerDayCap: hours });
+    patchPlan(immediate);
+    setDayIdx(targetDayIdx);
+
+    void (async () => {
+      await refreshDayRouteAndMetrics(immediate, fromDayIdx, false);
+      const afterFirst = useRoam.getState().plan;
+      if (afterFirst) {
+        await refreshDayRouteAndMetrics(afterFirst, targetDayIdx, false);
+      }
+    })();
+  };
+
   const handleTransportSwitch = (nextMode: TransportMode): void => {
     setTransportMode(nextMode);
     const next: TripPlan = structuredClone(plan);
@@ -732,8 +851,94 @@ export function PlanSheet({
     }
   };
 
+  const replanControlsJSX = (
+    <div className="clay-raised space-y-3 sm:space-y-4 p-3 sm:p-4 no-print">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-bold text-muted-foreground">Travel Time Schedule:</span>
+        <div className="flex gap-1.5">
+          <button
+            onClick={() => handleTimeModeSwitch("recommended")}
+            className={cn(
+              "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition-all",
+              timeMode === "recommended"
+                ? "bg-accent text-white shadow-sm"
+                : "bg-surface text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Sparkles size={12} /> Engine Recommended ({day.totalHours} h)
+          </button>
+          <button
+            onClick={() => handleTimeModeSwitch("capped")}
+            className={cn(
+              "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition-all",
+              timeMode === "capped"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "bg-surface text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Clock size={12} /> Cap Hours / Day
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-4">
+        {timeMode === "capped" && (
+          <Slider
+            label="Hours / day"
+            min={2}
+            max={15}
+            value={hours}
+            onChange={setHours}
+            format={(v) => `${v} h`}
+          />
+        )}
+        <Slider label="Days" min={1} max={7} value={days} onChange={setDays} />
+        <Button variant="primary" onClick={() => triggerRouteCalculation()}>
+          🔄 {t("plan.replan")}
+        </Button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 pt-1 border-t border-border/40">
+        <Button onClick={readAloud}>
+          <Volume2 size={15} /> {t("plan.readAloud")}
+        </Button>
+        <Button onClick={() => download(`${plan.city}-roam-plan.ics`, icsForPlan(plan), "text/calendar")}>
+          <Download size={15} /> .ics
+        </Button>
+        <Button onClick={() => download(`${plan.city}-roam-plan.txt`, planToText(plan), "text/plain")}>
+          <Download size={15} /> .txt
+        </Button>
+        <Button onClick={() => window.print()}>
+          <Printer size={15} /> Print / PDF
+        </Button>
+        <Button onClick={share}>
+          <Share2 size={15} /> {t("plan.share")}
+        </Button>
+        {qr && (
+          <span className="clay-raised-sm inline-flex items-center gap-2 p-2">
+            <QrCode size={14} className="text-primary" />
+            <img src={qr} alt="Trip QR code" width={72} height={72} className="rounded-lg" />
+          </span>
+        )}
+      </div>
+      <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <MapPin size={11} /> Legs use OSRM {transportMode === "drive" ? "driving" : "walking"} routes (2-opt shortest path).{" "}
+        {plan.budgetBand && plan.budgetBand.pricedCount > 0
+          ? `Estimated spend ₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}–₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.max)} per person (${plan.budgetBand.pricedCount}/${plan.budgetBand.totalStops} priced).`
+          : "Stop prices vary — no fabricated estimates."}
+      </p>
+    </div>
+  );
+
   return (
-    <Modal open={open} onClose={onClose} labelledBy="plan-title" side>
+    <Modal
+      open={open}
+      onClose={onClose}
+      labelledBy="plan-title"
+      side
+      maximized={isMaximized}
+      onToggleMaximize={() => setIsMaximized((v) => !v)}
+    >
       <div className="thin-scroll flex h-full flex-col overflow-y-auto print-plan">
         <div className="sticky top-0 z-10 bg-card/95 px-4 sm:px-5 pb-3 pt-4 sm:pt-5 backdrop-blur border-b border-border/40">
           <div className="flex items-center justify-between gap-2">
@@ -791,6 +996,30 @@ export function PlanSheet({
             </div>
           )}
 
+          {/* Emotion-aware Trek Fatigue Alert Banner */}
+          {day.highExertionTrekDetected && (day.remainingStopsAfterTrekCount ?? 0) > 0 && (
+            <div className="mt-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs space-y-2">
+              <div className="flex items-start gap-2.5">
+                <span className="text-lg leading-none">⚡</span>
+                <div className="flex-1">
+                  <p className="font-bold text-amber-900 dark:text-amber-200">
+                    Strenuous trek detected: {day.exertionStopName}
+                  </p>
+                  <p className="mt-0.5 text-muted-foreground text-[11px] leading-relaxed">
+                    Fort climbs and rugged trails take immense stamina. We added a 45-min recovery &amp; chai buffer.
+                    Feeling tired after the ascent?
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => shiftTrekRemainingToDay2(dayIdx, (day.exertionStopIndex ?? 0) + 1)}
+                className="w-full flex items-center justify-center gap-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 text-xs shadow-sm transition-colors active:scale-95"
+              >
+                <span>🌙 Shift remaining {day.remainingStopsAfterTrekCount} stops to Day {dayIdx + 2}</span>
+              </button>
+            </div>
+          )}
+
           {/* Multi-stop Route Action Bar */}
           <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
             {fullDayGmapsUrl && (
@@ -837,6 +1066,72 @@ export function PlanSheet({
             </button>
           </div>
 
+          {/* Meal Anchors Selector */}
+          <div className="mt-2 rounded-xl border border-border/50 bg-surface/70 p-2 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-muted-foreground flex items-center gap-1.5">
+                🍽️ Meal Stops En Route
+              </span>
+              <span className="text-[10px] text-muted-foreground">Auto-slots authentic local food</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  const nextVal = !includeBreakfast;
+                  setIncludeBreakfast(nextVal);
+                  triggerRouteCalculation({ includeBreakfast: nextVal });
+                }}
+                className={cn(
+                  "flex flex-col items-center justify-center p-1.5 rounded-xl text-center border transition-all text-xs",
+                  includeBreakfast
+                    ? "bg-amber-500/15 border-amber-500/40 text-foreground font-bold shadow-sm"
+                    : "bg-surface border-transparent text-muted-foreground hover:bg-surface/80",
+                )}
+              >
+                <span className="text-sm">🌅</span>
+                <span className="text-[11px] mt-0.5">Breakfast</span>
+                <span className="text-[9px] text-muted-foreground">~8:30 AM</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextVal = !includeLunch;
+                  setIncludeLunch(nextVal);
+                  triggerRouteCalculation({ includeLunch: nextVal });
+                }}
+                className={cn(
+                  "flex flex-col items-center justify-center p-1.5 rounded-xl text-center border transition-all text-xs",
+                  includeLunch
+                    ? "bg-orange-500/15 border-orange-500/40 text-foreground font-bold shadow-sm"
+                    : "bg-surface border-transparent text-muted-foreground hover:bg-surface/80",
+                )}
+              >
+                <span className="text-sm">🍛</span>
+                <span className="text-[11px] mt-0.5">Lunch</span>
+                <span className="text-[9px] text-muted-foreground">~1:00 PM</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextVal = !includeDinner;
+                  setIncludeDinner(nextVal);
+                  triggerRouteCalculation({ includeDinner: nextVal });
+                }}
+                className={cn(
+                  "flex flex-col items-center justify-center p-1.5 rounded-xl text-center border transition-all text-xs",
+                  includeDinner
+                    ? "bg-red-500/15 border-red-500/40 text-foreground font-bold shadow-sm"
+                    : "bg-surface border-transparent text-muted-foreground hover:bg-surface/80",
+                )}
+              >
+                <span className="text-sm">🍽️</span>
+                <span className="text-[11px] mt-0.5">Dinner</span>
+                <span className="text-[9px] text-muted-foreground">~8:00 PM</span>
+              </button>
+            </div>
+          </div>
+
           {/* visited progress */}
           <div className="mt-2.5 flex items-center gap-2">
             <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface">
@@ -853,34 +1148,41 @@ export function PlanSheet({
           </div>
         </div>
 
-        <div className="px-4 sm:px-5 pb-6 pt-3 space-y-3">
-          {/* Embedded Interactive Route Map Preview with Numbered Stop Pins */}
-          {showRouteMap && day.stops.length > 0 && (
-            <div className="space-y-1.5">
-              <EmbeddedRouteMap
-                places={[]}
-                center={{
-                  lat: day.stops[0]?.lat ?? plan.lat ?? 19.2437,
-                  lon: day.stops[0]?.lon ?? plan.lon ?? 73.1355,
-                }}
-                onSelect={onOpenPlace}
-                planStops={day.stops}
-                startAnchor={plan.startAnchor ?? null}
-                fitRouteBounds
-                compact
-                savedIds={savedIds}
-                height="230px"
-              />
-              {plan.startAnchor && (
-                <p className="text-[11px] text-muted-foreground flex items-center gap-1">
-                  <MapPin size={11} className="text-emerald-600 shrink-0" />
-                  <span>
-                    Route starts from <b>{plan.startAnchor.label}</b> → {day.stops.length} ordered stops (2-opt shortest path)
-                  </span>
-                </p>
-              )}
-            </div>
+        <div
+          className={cn(
+            "px-4 sm:px-5 pb-6 pt-3 space-y-3",
+            isMaximized && "lg:grid lg:grid-cols-12 lg:gap-6 lg:items-start lg:space-y-0",
           )}
+        >
+          {/* Left Column in maximized mode */}
+          <div className={cn(isMaximized ? "lg:col-span-5 space-y-3.5 lg:sticky lg:top-2" : "space-y-3")}>
+            {/* Embedded Interactive Route Map Preview with Numbered Stop Pins */}
+            {showRouteMap && day.stops.length > 0 && (
+              <div className="space-y-1.5">
+                <EmbeddedRouteMap
+                  places={[]}
+                  center={{
+                    lat: day.stops[0]?.lat ?? plan.lat ?? 19.2437,
+                    lon: day.stops[0]?.lon ?? plan.lon ?? 73.1355,
+                  }}
+                  onSelect={onOpenPlace}
+                  planStops={day.stops}
+                  startAnchor={plan.startAnchor ?? null}
+                  fitRouteBounds
+                  compact
+                  savedIds={savedIds}
+                  height={isMaximized ? "320px" : "230px"}
+                />
+                {plan.startAnchor && (
+                  <p className="text-[11px] text-muted-foreground flex items-center gap-1">
+                    <MapPin size={11} className="text-emerald-600 shrink-0" />
+                    <span>
+                      Route starts from <b>{plan.startAnchor.label}</b> → {day.stops.length} ordered stops (2-opt shortest path)
+                    </span>
+                  </p>
+                )}
+              </div>
+            )}
 
           {/* Collapsible Place Selector & Category Filter & Start Anchor Builder */}
           {showPlaceSelector && (
@@ -1035,7 +1337,13 @@ export function PlanSheet({
                             ? p.priceHint.min === 0 && p.priceHint.max === 0
                               ? "Free"
                               : `₹${p.priceHint.min}`
-                            : "Varies"}{" "}
+                            : p.category === "nature"
+                              ? "Free"
+                              : p.category === "food"
+                                ? "₹150–350"
+                                : p.category === "culture"
+                                  ? "₹20–50"
+                                  : "Varies"}{" "}
                           · {p.durationMinutes}m
                         </span>
                       </label>
@@ -1057,6 +1365,11 @@ export function PlanSheet({
             </div>
           )}
 
+          {isMaximized && replanControlsJSX}
+        </div>
+
+        {/* Right Column in maximized mode, or main flow */}
+        <div className={cn(isMaximized ? "lg:col-span-7 space-y-3.5" : "space-y-3")}>
           {/* Day tabs */}
           <div className="flex gap-1.5 overflow-x-auto pb-1">
             {plan.days.map((_, i) => (
@@ -1279,8 +1592,16 @@ export function PlanSheet({
                         )}
                         title={s.priceQuote ?? s.priceBasis}
                       >
-                        🏷️ {s.priceBasis ?? (s.pricePerPerson !== undefined ? `~₹${s.pricePerPerson} pp` : "Varies — no reliable signal")}
+                        🏷️ {s.priceBasis ?? (s.pricePerPerson !== undefined ? `~₹${s.pricePerPerson} pp` : "Varies on site")}
                       </span>
+                      {s.isHighExertion && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/25"
+                          title="Strenuous trek/climb: 45-min recovery buffer added after this stop"
+                        >
+                          ⚡ Trek (+45m rest)
+                        </span>
+                      )}
                       {s.lat !== undefined && s.lon !== undefined && (
                         <a
                           href={
@@ -1395,83 +1716,9 @@ export function PlanSheet({
             )}
           </ol>
 
-          {/* Travel Time Mode & Replan Controls */}
-          <div className="clay-raised mt-4 space-y-3 sm:space-y-4 p-3 sm:p-4 no-print">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-bold text-muted-foreground">Travel Time Schedule:</span>
-              <div className="flex gap-1.5">
-                <button
-                  onClick={() => handleTimeModeSwitch("recommended")}
-                  className={cn(
-                    "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition-all",
-                    timeMode === "recommended"
-                      ? "bg-accent text-white shadow-sm"
-                      : "bg-surface text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <Sparkles size={12} /> Engine Recommended ({day.totalHours} h)
-                </button>
-                <button
-                  onClick={() => handleTimeModeSwitch("capped")}
-                  className={cn(
-                    "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition-all",
-                    timeMode === "capped"
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "bg-surface text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <Clock size={12} /> Cap Hours / Day
-                </button>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-end gap-4">
-              {timeMode === "capped" && (
-                <Slider
-                  label="Hours / day"
-                  min={2}
-                  max={15}
-                  value={hours}
-                  onChange={setHours}
-                  format={(v) => `${v} h`}
-                />
-              )}
-              <Slider label="Days" min={1} max={7} value={days} onChange={setDays} />
-              <Button variant="primary" onClick={() => triggerRouteCalculation()}>
-                🔄 {t("plan.replan")}
-              </Button>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={readAloud}>
-                <Volume2 size={15} /> {t("plan.readAloud")}
-              </Button>
-              <Button onClick={() => download(`${plan.city}-roam-plan.ics`, icsForPlan(plan), "text/calendar")}>
-                <Download size={15} /> .ics
-              </Button>
-              <Button onClick={() => download(`${plan.city}-roam-plan.txt`, planToText(plan), "text/plain")}>
-                <Download size={15} /> .txt
-              </Button>
-              <Button onClick={() => window.print()}>
-                <Printer size={15} /> Print / PDF
-              </Button>
-              <Button onClick={share}>
-                <Share2 size={15} /> {t("plan.share")}
-              </Button>
-              {qr && (
-                <span className="clay-raised-sm inline-flex items-center gap-2 p-2">
-                  <QrCode size={14} className="text-primary" />
-                  <img src={qr} alt="Trip QR code" width={72} height={72} className="rounded-lg" />
-                </span>
-              )}
-            </div>
-            <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <MapPin size={11} /> Legs use OSRM {transportMode === "drive" ? "driving" : "walking"} routes (2-opt shortest path).{" "}
-              {plan.budgetBand && plan.budgetBand.pricedCount > 0
-                ? `Estimated spend ₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}–₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.max)} per person (${plan.budgetBand.pricedCount}/${plan.budgetBand.totalStops} priced).`
-                : "Stop prices vary — no fabricated estimates."}
-            </p>
-          </div>
+          {/* Replan & Export controls for compact side drawer mode */}
+          {!isMaximized && replanControlsJSX}
+        </div>
         </div>
       </div>
     </Modal>
