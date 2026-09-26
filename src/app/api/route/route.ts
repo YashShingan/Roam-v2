@@ -15,7 +15,12 @@ export async function GET(req: Request) {
   try {
     const sp = new URL(req.url).searchParams;
     const raw = sp.get("waypoints") ?? "";
-    const mode = sp.get("mode") === "drive" ? "driving" : "foot";
+    // Transit has no keyless OSRM profile — never forward it upstream.
+    const requested = sp.get("mode");
+    if (requested === "transit") {
+      return NextResponse.json({ engine: "none", legs: null, transit: true });
+    }
+    const mode = requested === "drive" ? "driving" : "foot";
     const pts = raw
       .split(";")
       .map((p) => p.split(",").map(Number))
