@@ -228,9 +228,13 @@ export function Modal({
             role="dialog"
             aria-modal="true"
             aria-labelledby={labelledBy}
-            initial={side && !maximized ? { x: "100%" } : { y: 60, opacity: 0, scale: 0.97 }}
-            animate={side && !maximized ? { x: 0 } : { y: 0, opacity: 1, scale: 1 }}
-            exit={side && !maximized ? { x: "100%" } : { y: 40, opacity: 0, scale: 0.98 }}
+            // Keyed by mode so maximize/restore never replays the *entry* animation
+            // (the old code animated with the slide-in variant when toggling, which
+            // visually overrode/clobbered whatever was behind the sheet).
+            key={side && !maximized ? "sheet" : maximized ? "maximized" : "dialog"}
+            initial={{ opacity: 0, ...(side && !maximized ? { x: 24 } : { y: 24, scale: 0.98 }) }}
+            animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+            exit={{ opacity: 0, ...(side && !maximized ? { x: 32 } : { y: 32, scale: 0.98 }) }}
             transition={SPRING}
             className={cn(
               "relative clay-raised-lg bg-card overflow-hidden flex flex-col transition-all duration-300",

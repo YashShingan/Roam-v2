@@ -132,7 +132,11 @@ export interface PersonaConfig {
   kidFriendlyOnly?: boolean;
 }
 
-export type TransportMode = "walk" | "drive";
+// "transit" = local bus / shared auto / metro — estimated with realistic Indian-city
+// conditions (stops are rarely within walking distance of a station, so this is an
+// honest heuristic estimate, not a GTFS timetable). OSRM has no keyless transit
+// router, so legs use the documented estimate path and Google-Maps deep links.
+export type TransportMode = "walk" | "drive" | "transit";
 export type TimeMode = "recommended" | "capped";
 
 export interface StartAnchor {

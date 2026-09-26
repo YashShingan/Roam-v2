@@ -19,7 +19,7 @@ const Body = z.object({
   excludedPlaceIds: z.array(z.string()).max(60).optional(),
   budget: z.number().min(0).max(100000).optional(),
   vibe: z.enum(["chill", "packed", "foodie", "heritage"]).optional(),
-  transportMode: z.enum(["walk", "drive"]).optional(),
+  transportMode: z.enum(["walk", "drive", "transit"]).optional(),
   timeMode: z.enum(["recommended", "capped"]).optional(),
   startAnchor: z
     .object({

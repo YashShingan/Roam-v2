@@ -159,7 +159,22 @@ export function durationMinutesFromKm(km: number, mode: TransportMode = "walk"):
   if (mode === "drive") {
     return Math.max(2, Math.round((km / 24) * 60 + 1));
   }
+  if (mode === "transit") {
+    // ~10 min wait/transfer overhead + access egress walk + bus at ~17 km/h.
+    // Short hops stay cheaper than drive so the ranking still prefers walking legs.
+    return Math.max(6, Math.round(10 + (km / 17) * 60 + Math.min(8, km * 2)));
+  }
   return Math.max(1, Math.round((km / 4.8) * 60));
+}
+
+/** Google-Maps travelmode token for a transport mode. */
+export function gmapsTravelMode(mode: TransportMode): "walking" | "driving" | "transit" {
+  return mode === "drive" ? "driving" : mode === "transit" ? "transit" : "walking";
+}
+
+/** Human label used in notes/voice summaries. */
+export function modeLabel(mode: TransportMode): "walk" | "drive" | "transit" {
+  return mode === "drive" ? "drive" : mode === "transit" ? "transit" : "walk";
 }
 
 export function estimateLeg(
@@ -170,7 +185,7 @@ export function estimateLeg(
   mode: TransportMode = "walk",
 ): { minutes: number; km: number } {
   const straight = haversineKm(aLat, aLon, bLat, bLon);
-  const factor = mode === "drive" ? 1.3 : 1.4;
+  const factor = mode === "drive" ? 1.3 : mode === "transit" ? 1.35 : 1.4;
   const km = Number((straight * factor).toFixed(2));
   const minutes = durationMinutesFromKm(km, mode);
   return { minutes, km };
@@ -182,6 +197,23 @@ export async function osrmLegs(
   mode: TransportMode = "walk",
 ): Promise<{ minutes: number[]; kms: number[]; geometries: [number, number][][] } | null> {
   if (points.length < 2) return null;
+  // No keyless transit router exists — estimate hops locally and fall back to
+  // Google-Maps transit deep links for actual directions.
+  if (mode === "transit") {
+    const kms: number[] = [];
+    const minutes: number[] = [];
+    const geometries: [number, number][][] = [];
+    for (let i = 1; i < points.length; i++) {
+      const est = estimateLeg(points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon, "transit");
+      kms.push(est.km);
+      minutes.push(est.minutes);
+      geometries.push([
+        [points[i - 1].lat, points[i - 1].lon],
+        [points[i].lat, points[i].lon],
+      ]);
+    }
+    return { minutes, kms, geometries };
+  }
   const profile = mode === "drive" ? "driving" : "foot";
   const coords = points.map((p) => `${p.lon},${p.lat}`).join(";");
   try {
@@ -317,7 +349,7 @@ export function buildMultiStopGmapsUrl(
   const validStops = stops.filter((s) => s.lat !== undefined && s.lon !== undefined);
   if (validStops.length === 0) return undefined;
 
-  const travelmode = mode === "drive" ? "driving" : "walking";
+  const travelmode = gmapsTravelMode(mode);
   const pts: string[] = [];
 
   if (
@@ -437,14 +469,14 @@ export function recomputePlanMetrics(
         s.timeOfDay = tod;
       }
 
-      const modeLabel = mode === "drive" ? "drive" : "walk";
+      const mLabel = modeLabel(mode);
       if (i === 0) {
         s.note =
           s.travelMinFromPrev > 0 && next.startAnchor
-            ? `${s.travelMinFromPrev} min ${modeLabel} (${s.legKmFromPrev} km) from ${next.startAnchor.label}`
+            ? `${s.travelMinFromPrev} min ${mLabel} (${s.legKmFromPrev} km) from ${next.startAnchor.label}`
             : "Start here";
       } else {
-        s.note = `${s.travelMinFromPrev} min ${modeLabel}${s.legKmFromPrev ? ` (${s.legKmFromPrev} km)` : ""} from previous`;
+        s.note = `${s.travelMinFromPrev} min ${mLabel}${s.legKmFromPrev ? ` (${s.legKmFromPrev} km)` : ""} from previous`;
       }
 
       if (s.lat !== undefined && s.lon !== undefined) {
@@ -454,7 +486,7 @@ export function recomputePlanMetrics(
             : next.startAnchor
               ? `${next.startAnchor.lat},${next.startAnchor.lon}`
               : undefined;
-        const tm = mode === "drive" ? "driving" : "walking";
+        const tm = gmapsTravelMode(mode);
         s.gmapsDirectionsUrl = prevPt
           ? `https://www.google.com/maps/dir/?api=1&origin=${prevPt}&destination=${s.lat},${s.lon}&travelmode=${tm}`
           : `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}&travelmode=${tm}`;
@@ -479,7 +511,7 @@ export function recomputePlanMetrics(
     totalMinutesAllDays += dayTotalMin;
 
     day.totalHours = Number((dayTotalMin / 60).toFixed(1));
-    if (mode === "drive") {
+    if (mode !== "walk") {
       day.driveKm = Number(dayDistKm.toFixed(1));
       day.walkKm = Number(dayDistKm.toFixed(1));
     } else {
@@ -521,7 +553,7 @@ export function recomputePlanMetrics(
 
   let feasMsg = "";
   if (timeMode === "recommended") {
-    feasMsg = `Engine recommended schedule: ~${recHoursTotal} h total (${totalStops} stop${totalStops === 1 ? "" : "s"}, ${mode === "drive" ? "driving" : "walking"} route)`;
+    feasMsg = `Engine recommended schedule: ~${recHoursTotal} h total (${totalStops} stop${totalStops === 1 ? "" : "s"}, ${gmapsTravelMode(mode)} route)`;
   } else if (overTime) {
     feasMsg = `Runs ~${(recHoursTotal - next.days.length * hoursCap).toFixed(1)} h over your ${hoursCap} h/day cap — switch to Engine Recommended or trim a stop.`;
   } else {
@@ -550,7 +582,7 @@ export function recomputePlanMetrics(
 
   const cityDisplayName = (next.cityLabel || next.city || "your destination").split(",")[0];
   next.voiceSummary = [
-    `Here is your ${next.days.length}-day ${mode === "drive" ? "driving" : "walking"} route for ${cityDisplayName}.`,
+    `Here is your ${next.days.length}-day ${gmapsTravelMode(mode)} route for ${cityDisplayName}.`,
     ...next.days.map((d, i) => {
       const list = d.stops
         .slice(0, 5)
