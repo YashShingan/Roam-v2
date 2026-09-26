@@ -240,7 +240,7 @@ Never invent proprietary IDs. When user mentions places, specify them by name.`;
             persona: typeof args.persona === "string" ? (args.persona as never) : undefined,
             timeMode: typeof args.timeMode === "string" ? (args.timeMode as never) : undefined,
             startAnchor: typeof args.startAnchorLabel === "string" && args.startAnchorLabel
-              ? { type: "place", label: args.startAnchorLabel, lat: 0, lon: 0 }
+              ? { type: "place", label: args.startAnchorLabel }
               : undefined,
           });
           if (!verbalReply) {

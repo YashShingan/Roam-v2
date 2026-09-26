@@ -33,7 +33,7 @@ export interface PlanRequest {
   radiusKm?: number;
   transportMode?: TransportMode;
   timeMode?: TimeMode;
-  startAnchor?: StartAnchor;
+  startAnchor?: Omit<StartAnchor, "lat" | "lon"> & { lat?: number; lon?: number };
   includeBreakfast?: boolean;
   includeLunch?: boolean;
   includeDinner?: boolean;
@@ -417,7 +417,9 @@ export function recomputePlanMetrics(
           const est = estimateLeg(next.startAnchor.lat, next.startAnchor.lon, s.lat, s.lon, mode);
           if (legKm === undefined || legKm === 0) legKm = est.km;
           if (opts.recalcTravelFromMode || !travelMin) {
-            travelMin = durationMinutesFromKm(legKm, mode);
+            travelMin = Math.min(60, durationMinutesFromKm(legKm, mode));
+          } else {
+            travelMin = Math.min(60, travelMin);
           }
         } else {
           travelMin = 0;
@@ -606,15 +608,50 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
   const mode: TransportMode = req.transportMode ?? "walk";
   const timeMode: TimeMode = req.timeMode ?? "recommended";
   const cityAnchorName = (req.cityLabel || req.city || "City").split(",")[0];
-  const anchor: StartAnchor =
-    req.startAnchor && req.startAnchor.type !== "city"
-      ? req.startAnchor
-      : {
-          type: "city",
-          label: `${cityAnchorName} Center`,
-          lat: req.lat ?? req.startAnchor?.lat ?? 19.2437,
-          lon: req.lon ?? req.startAnchor?.lon ?? 73.1355,
-        };
+  const cityLat = req.lat ?? 18.5204;
+  const cityLon = req.lon ?? 73.8567;
+
+  let anchor: StartAnchor;
+  if (req.startAnchor && req.startAnchor.type !== "city") {
+    let aLat = req.startAnchor.lat;
+    let aLon = req.startAnchor.lon;
+    let pId = req.startAnchor.placeId;
+
+    // If coordinates are missing, Null Island (0,0), or invalid, search places by label
+    if (!aLat || !aLon || (Math.abs(aLat) < 0.001 && Math.abs(aLon) < 0.001)) {
+      const match = places.find(
+        (p) =>
+          p.lat !== undefined &&
+          p.lon !== undefined &&
+          (p.name.toLowerCase().includes(req.startAnchor!.label.toLowerCase()) ||
+            req.startAnchor!.label.toLowerCase().includes(p.name.toLowerCase())),
+      );
+      if (match && match.lat !== undefined && match.lon !== undefined) {
+        aLat = match.lat;
+        aLon = match.lon;
+        pId = match.id;
+      } else {
+        // Fall back to city center
+        aLat = cityLat;
+        aLon = cityLon;
+      }
+    }
+
+    anchor = {
+      type: req.startAnchor.type,
+      label: req.startAnchor.label,
+      lat: aLat,
+      lon: aLon,
+      placeId: pId,
+    };
+  } else {
+    anchor = {
+      type: "city",
+      label: `${cityAnchorName} Center`,
+      lat: cityLat,
+      lon: cityLon,
+    };
+  }
 
   const excludedSet = new Set(req.excludedPlaceIds ?? []);
   const lockedSet = new Set(req.lockedPlaceIds ?? []);
@@ -855,16 +892,19 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
       dayCandidates = orderedSights;
     }
 
-    // If capped time mode and not explicit hand-picked selection, trim to fit dayCapacityMin
-    if (timeMode === "capped" && !hasExplicitSelection) {
-      const trimmed: ScoredPlace[] = [];
-      let load = 0;
-      for (const s of dayCandidates) {
-        if (trimmed.length >= 2 && load + s.exp.durationMinutes > dayCapacityMin) break;
-        trimmed.push(s);
-        load += s.exp.durationMinutes + 15;
-      }
-      dayCandidates = trimmed;
+    // Enforce realistic human schedule: maximum 7 stops per day (including meal anchors)
+    if (!hasExplicitSelection && dayCandidates.length > 7) {
+      // Keep breakfast (if index 0) and dinner (if last), trim middle sights
+      const hasBk = wantBreakfast && dayCandidates[0]?.exp.category === "food";
+      const hasDn = wantDinner && dayCandidates[dayCandidates.length - 1]?.exp.category === "food";
+      const middle = dayCandidates.slice(hasBk ? 1 : 0, hasDn ? dayCandidates.length - 1 : dayCandidates.length);
+      const allowedMiddle = 7 - (hasBk ? 1 : 0) - (hasDn ? 1 : 0);
+      const trimmedMiddle = middle.slice(0, allowedMiddle);
+      dayCandidates = [
+        ...(hasBk ? [dayCandidates[0]] : []),
+        ...trimmedMiddle,
+        ...(hasDn ? [dayCandidates[dayCandidates.length - 1]] : []),
+      ];
     }
 
     // Build OSRM waypoints: [anchor (if distinct from stop 0), stop 0, stop 1, ...]

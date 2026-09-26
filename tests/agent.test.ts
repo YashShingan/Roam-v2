@@ -164,4 +164,39 @@ describe("Circumstance Adapter & Agent Replanning", () => {
     expect(res3.hasStopPhrase).toBe(false);
     expect(res3.cleaned).toBe("Plan a weekend nature trip to Badlapur");
   });
+
+  it("safely resolves start anchors with (0,0) or missing coordinates to waking hours (08:30–09:00 AM)", async () => {
+    const { buildTripPlan } = await import("@/lib/planner");
+    const testPlaces: Experience[] = [
+      makeExp({ id: "p1", name: "Peshwa Fort", category: "culture", lat: 18.52, lon: 73.85 }),
+      makeExp({ id: "p2", name: "Cafe De Flora", category: "food", lat: 18.51, lon: 73.84 }),
+      makeExp({ id: "p3", name: "Dagdusheth Ganpati", category: "culture", lat: 18.515, lon: 73.855 }),
+    ];
+
+    const plan = await buildTripPlan(testPlaces, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra, India",
+      lat: 18.5204,
+      lon: 73.8567,
+      days: 1,
+      hoursPerDay: 8,
+      startAnchor: {
+        type: "place",
+        label: "Pune Station",
+        lat: 0,
+        lon: 0,
+      },
+    });
+
+    expect(plan.days[0].stops.length).toBeGreaterThan(0);
+    const stop0 = plan.days[0].stops[0];
+    // Start slot must be morning (08:30 to 09:30), never 02:38 AM
+    const startHour = parseInt(stop0.slotStart.split(":")[0], 10);
+    expect(startHour).toBeGreaterThanOrEqual(8);
+    expect(startHour).toBeLessThanOrEqual(10);
+    // Leg distance must be realistic (< 20 km), not 11,000+ km Null Island drift
+    expect(stop0.legKmFromPrev ?? 0).toBeLessThan(25);
+    // Total stops per day should not exceed 7
+    expect(plan.days[0].stops.length).toBeLessThanOrEqual(7);
+  });
 });

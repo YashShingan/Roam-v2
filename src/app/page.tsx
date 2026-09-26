@@ -274,10 +274,10 @@ export default function Home() {
         setPlan(j.plan);
         setPlanOpen(true);
         toast.success(`Route ready — ${j.plan.days.reduce((a, d) => a + d.stops.length, 0)} stops`);
-        if ("speechSynthesis" in window && j.plan.voiceSummary) {
+        if ("speechSynthesis" in window && j.plan.voiceSummary && !voiceOpen) {
+          speechSynthesis.cancel();
           const u = new SpeechSynthesisUtterance(j.plan.voiceSummary.slice(0, 320));
           u.lang = "en-IN";
-          speechSynthesis.cancel();
           speechSynthesis.speak(u);
         }
       } catch (e) {
@@ -741,6 +741,7 @@ export default function Home() {
         cityCenter={
           placesQuery.data ? { lat: placesQuery.data.lat, lon: placesQuery.data.lon } : undefined
         }
+        onOpenVoice={() => setVoiceOpen(true)}
       />
       <CompareSheet open={compareOpen} onClose={() => setCompareOpen(false)} places={places} onOpenPlace={(e) => setDetail(e)} />
       <CompareTray places={places} onOpen={() => setCompareOpen(true)} />

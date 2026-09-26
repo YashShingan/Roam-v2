@@ -41,5 +41,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 11. **Voice Assistant & Speech Recognition Architecture Guardrails (`src/components/voice.tsx`, `src/app/api/assistant/route.ts`)**:
    - Never undertake intrusive architectural rewrites on working media hardware loops (`webkitSpeechRecognition`, `MediaRecorder`, Web Audio VAD). Chromium mic locking, lifecycle pauses, and tab permissions are sensitive to abstraction churn.
    - Keep conversational NLU prompts natural and multi-turn capable; do not constrain incoming conversational queries into rigid zero-shot schemas that fail server-side validation.
+12. **Itinerary Start Times, Anchor Coordinates & Per-Day Stop Limits (`src/lib/planner.ts`, `src/app/api/assistant/route.ts`)**:
+   - Start anchors without pre-resolved coordinates (e.g. from LLM tool calling or voice landmark mentions) must never inject Null Island `(0,0)`. They must be resolved against city places or safely fall back to the city center coordinates.
+   - Initial route leg travel times are capped so scheduled stop slots always start strictly within morning waking hours (`08:30–09:30 AM`), never wrapping into night hours.
+   - Generated itineraries must never assign more than 7 stops per day (including meal anchors) unless explicitly hand-picked by the user.
 
 

@@ -25,8 +25,8 @@ const Body = z.object({
     .object({
       type: z.enum(["city", "gps", "place"]),
       label: z.string(),
-      lat: z.number(),
-      lon: z.number(),
+      lat: z.number().optional(),
+      lon: z.number().optional(),
       placeId: z.string().optional(),
     })
     .optional(),

@@ -19,6 +19,7 @@ import {
   LockOpen,
   Map as MapIcon,
   MapPin,
+  Mic,
   Navigation,
   Printer,
   QrCode,
@@ -90,7 +91,7 @@ export interface ReplanOptions {
   excludedPlaceIds?: string[];
   transportMode?: TransportMode;
   timeMode?: TimeMode;
-  startAnchor?: StartAnchor;
+  startAnchor?: Omit<StartAnchor, "lat" | "lon"> & { lat?: number; lon?: number };
   vibe?: Vibe;
   includeBreakfast?: boolean;
   includeLunch?: boolean;
@@ -111,12 +112,14 @@ export function PlanSheet({
   cityCenter,
   currentCity,
   currentCityLabel,
+  onOpenVoice,
 }: {
   open: boolean;
   onClose: () => void;
   onReplan: (req: ReplanOptions) => void;
   onOpenPlace: (exp: Experience) => void;
   onViewOnMap?: () => void;
+  onOpenVoice?: () => void;
   places?: Experience[];
   activeCategories?: Category[];
   cityCenter?: { lat: number; lon: number };
@@ -387,7 +390,7 @@ export function PlanSheet({
     const useExplicitSelectedIds =
       overrides?.selectedPlaceIds !== undefined
         ? overrides.selectedPlaceIds
-        : (overrides?.forceUseSelectedIds || hasCustomPlaceSelection || !plan) && validIds.length > 0
+        : overrides?.forceUseSelectedIds || hasCustomPlaceSelection
           ? validIds
           : undefined;
 
@@ -1206,6 +1209,16 @@ export function PlanSheet({
                   className="clay-raised-sm inline-flex items-center gap-1 rounded-lg px-2 py-1 font-semibold text-foreground hover:text-primary transition-colors"
                 >
                   <Compass size={11} /> Full Map
+                </button>
+              )}
+              {onOpenVoice && (
+                <button
+                  onClick={onOpenVoice}
+                  className="clay-raised-sm inline-flex items-center gap-1 rounded-lg px-2.5 py-1 font-semibold text-primary hover:bg-primary/10 transition-colors"
+                  title="Talk to Roam Voice Assistant"
+                >
+                  <Mic size={11} className="text-primary animate-pulse" />
+                  <span>Voice</span>
                 </button>
               )}
               <button

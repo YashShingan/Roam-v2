@@ -252,7 +252,7 @@ export type Action =
       includeLunch?: boolean;
       includeDinner?: boolean;
       persona?: TravelerPersona;
-      startAnchor?: StartAnchor;
+      startAnchor?: Omit<StartAnchor, "lat" | "lon"> & { lat?: number; lon?: number };
       timeMode?: TimeMode;
     }
   | { type: "add_stop"; name: string }

@@ -497,6 +497,7 @@ export function VoicePanel({
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const text = e.results[i][0].transcript;
         if (matchesWakeWord(text)) {
+          stopSpeaking();
           playWakeChime();
           toast.success("👋 'Hey Vibe' detected! Listening…");
           try {
@@ -610,7 +611,7 @@ export function VoicePanel({
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 60, opacity: 0 }}
           transition={SPRING}
-          className="clay-raised-lg fixed bottom-20 sm:bottom-24 inset-x-3 sm:inset-x-auto sm:right-4 z-50 flex max-h-[75dvh] sm:max-h-[70dvh] sm:w-[420px] flex-col overflow-hidden no-print"
+          className="clay-raised-lg fixed bottom-20 sm:bottom-24 inset-x-3 sm:inset-x-auto sm:right-4 z-[100] flex max-h-[75dvh] sm:max-h-[70dvh] sm:w-[420px] flex-col overflow-hidden no-print"
           role="dialog"
           aria-label="Roam voice assistant"
         >
