@@ -20,32 +20,6 @@ const CAT_COLORS: Record<Experience["category"], string> = {
 
 // Rock-solid 100% keyless open styles with instant loading
 const BASE_STYLES = {
-  voyager: {
-    version: 8,
-    sources: {
-      "carto-voyager": {
-        type: "raster",
-        tiles: [
-          "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-          "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-          "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-          "https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-        ],
-        tileSize: 256,
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      },
-    },
-    layers: [
-      {
-        id: "base-layer",
-        type: "raster",
-        source: "carto-voyager",
-        minzoom: 0,
-        maxzoom: 20,
-      },
-    ],
-  },
   osm: {
     version: 8,
     sources: {
@@ -119,7 +93,7 @@ export function MapView({
   const routeMarkersRef = useRef<import("maplibre-gl").Marker[]>([]);
   const [ready, setReady] = useState(false);
   const [terrainOn, setTerrainOn] = useState(false);
-  const [currentStyle, setCurrentStyle] = useState<StyleKey>("voyager");
+  const [currentStyle, setCurrentStyle] = useState<StyleKey>("osm");
   const [error, setError] = useState<string | null>(null);
   const [showHeat, setShowHeat] = useState(false);
   const [showAllPins, setShowAllPins] = useState(false);
@@ -498,7 +472,7 @@ export function MapView({
       {!ready && (
         <div className="absolute inset-0 flex items-center justify-center bg-surface/60 backdrop-blur-sm">
           <p className="clay-raised-sm px-4 py-2 text-sm font-medium animate-pulse">
-            Loading MapLibre — Voyager tiles…
+            Loading MapLibre — OpenStreetMap tiles…
           </p>
         </div>
       )}
@@ -520,16 +494,6 @@ export function MapView({
           )}
 
           <div className="clay-raised-sm flex items-center p-1 gap-1 rounded-xl bg-card/90 backdrop-blur text-xs font-semibold">
-            <button
-              onClick={() => handleStyleChange("voyager")}
-              className={cn(
-                "px-2.5 py-1 rounded-lg transition-all",
-                currentStyle === "voyager" ? "clay-pressed text-primary font-bold shadow-sm" : "hover:text-foreground text-muted-foreground",
-              )}
-              title="CARTO Voyager discovery style"
-            >
-              Voyager
-            </button>
             <button
               onClick={() => handleStyleChange("osm")}
               className={cn(

@@ -16,4 +16,10 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - The public `router.project-osrm.org` endpoint returns car speeds (~40 km/h) in `leg.duration` even on `/route/v1/foot/`. Always calculate `minutes` from `leg.distance / 1000` using mode-specific speeds (`4.8 km/h` for `walk`, `24 km/h` for urban `drive`).
 3. **Route Map Pin Isolation (`src/components/map.tsx`, `src/components/plan.tsx`)**:
    - When a trip plan is active, route preview maps must render only the start anchor and numbered itinerary stop markers (`1..N`) by default so unselected city places do not obscure the route.
+4. **Keyless Map Provider Invariant (`src/components/map.tsx`)**:
+   - Never use tile endpoints that require proprietary API keys or produce watermarks/authentication errors (such as CARTO Voyager). Default to OpenStreetMap Standard (`osm`: `https://tile.openstreetmap.org/{z}/{x}/{y}.png`) and Esri World Imagery (`satellite`).
+5. **Selective Stop Locking & Re-plan Invariants (`src/components/plan.tsx`, `src/lib/planner.ts`)**:
+   - Only stops explicitly liked (`reactions[id] === 1`) or locked (`s.locked === true`) may be sent in `lockedPlaceIds`.
+   - Never default unreacted stops to locked on re-plan when dislikes exist.
+   - Newly generated replacement stops from `buildTripPlan` must always be initialized with `locked: false` and neutral reaction state (`reactions[id] = 0`), so they display neutral reaction icons rather than auto-marking as "Keep".
 

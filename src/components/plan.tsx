@@ -252,16 +252,11 @@ export function PlanSheet({
         .filter(([, val]) => val === -1)
         .map(([id]) => id);
 
-    // Locked stops: explicitly locked or liked (👍); if any stop is disliked (👎), also keep non-disliked stops locked so only disliked stops get swapped out
-    const hasDislikes = excludedIds.length > 0;
+    // Locked stops: ONLY stops explicitly liked (👍 reactions === 1) or locked with padlock (s.locked === true)
     const lockedIds =
       overrides?.lockedPlaceIds ??
       currentStops
-        .filter((s) => {
-          if (excludedIds.includes(s.experienceId)) return false;
-          if (s.locked || reactions[s.experienceId] === 1) return true;
-          return hasDislikes;
-        })
+        .filter((s) => !excludedIds.includes(s.experienceId) && (s.locked || reactions[s.experienceId] === 1))
         .map((s) => s.experienceId);
 
     const validIds = selectedPlaceIds.filter((id) => {
@@ -623,6 +618,26 @@ export function PlanSheet({
       setSelectedPlaceIds((ids) => ids.filter((id) => id !== removed.experienceId));
     }
     void refreshDayRouteAndMetrics(next, dIdx, false);
+  };
+
+  const moveStopToDay = (fromDayIdx: number, toDayIdx: number, sIdx: number): void => {
+    if (fromDayIdx === toDayIdx || !plan || !plan.days[fromDayIdx] || !plan.days[toDayIdx]) return;
+    const next: TripPlan = structuredClone(plan);
+    const [moved] = next.days[fromDayIdx].stops.splice(sIdx, 1);
+    if (!moved) return;
+    next.days[toDayIdx].stops.push(moved);
+    toast.success(`Moved "${moved.name}" to Day ${toDayIdx + 1}`);
+
+    const immediate = recomputePlanMetrics(next, { reslot: true, hoursPerDayCap: hours });
+    patchPlan(immediate);
+
+    void (async () => {
+      await refreshDayRouteAndMetrics(immediate, fromDayIdx, false);
+      const afterFirst = useRoam.getState().plan;
+      if (afterFirst) {
+        await refreshDayRouteAndMetrics(afterFirst, toDayIdx, false);
+      }
+    })();
   };
 
   const handleTransportSwitch = (nextMode: TransportMode): void => {
@@ -1337,6 +1352,23 @@ export function PlanSheet({
                         <X size={13} />
                       </button>
                     </div>
+                    {plan.days.length > 1 && (
+                      <div className="w-full">
+                        <select
+                          value={dayIdx}
+                          onChange={(e) => moveStopToDay(dayIdx, Number(e.target.value), sIdx)}
+                          aria-label={`Move ${s.name} to another day`}
+                          title="Move to another day"
+                          className="h-6 w-full rounded-md border border-border/60 bg-surface px-1 text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-primary cursor-pointer text-center"
+                        >
+                          {plan.days.map((_, i) => (
+                            <option key={i} value={i}>
+                              {i === dayIdx ? `Day ${i + 1}` : `→ Day ${i + 1}`}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.li>

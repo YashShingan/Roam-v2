@@ -317,6 +317,11 @@ describe("Trip Planner Route Optimization & Strict Category Selection", () => {
     expect(stopIds).not.toContain("c1");
     const lockedStop = plan.days[0].stops.find((s) => s.experienceId === "c3");
     expect(lockedStop?.locked).toBe(true);
+
+    // Verify all other replacement stops are strictly unlocked (locked: false)
+    const otherStops = plan.days[0].stops.filter((s) => s.experienceId !== "c3");
+    expect(otherStops.length).toBeGreaterThan(0);
+    expect(otherStops.every((s) => s.locked === false)).toBe(true);
   });
 });
 
