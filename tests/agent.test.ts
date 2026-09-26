@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { adaptPlanForWeather, trimPlanForLateRunning, isOutdoorExperience, isCoveredIndoorExperience } from "@/lib/circumstance-adapter";
+import { matchesWakeWord, cleanVoiceTranscript } from "@/lib/voice-utils";
 import type { Experience, TripPlan } from "@/lib/types";
 
 function makeExp(overrides: Partial<Experience> & { id: string; name: string; category: Experience["category"] }): Experience {
@@ -141,5 +142,26 @@ describe("Circumstance Adapter & Agent Replanning", () => {
     expect(hasLunch).toBe(true);
     expect(result.trimmedStopName).toBe("Saras Baug Garden & Lake");
     expect(result.plan.feasibility?.message).toContain("delay recovered");
+  });
+
+  it("detects hands-free wake words accurately", () => {
+    expect(matchesWakeWord("Hey Vibe, plan a 2-day trip to Pune")).toBe(true);
+    expect(matchesWakeWord("hey roamy show me cultural places")).toBe(true);
+    expect(matchesWakeWord("ok vibe what is the sunset time")).toBe(true);
+    expect(matchesWakeWord("just showing regular search")).toBe(false);
+  });
+
+  it("detects trailing verbal stop phrases and cleanly extracts the core travel prompt", () => {
+    const res1 = cleanVoiceTranscript("Plan a 2-day cultural trip to Pune with lunch on FC road that's it");
+    expect(res1.hasStopPhrase).toBe(true);
+    expect(res1.cleaned).toBe("Plan a 2-day cultural trip to Pune with lunch on FC road");
+
+    const res2 = cleanVoiceTranscript("Find authentic thali in Kalyan, done.");
+    expect(res2.hasStopPhrase).toBe(true);
+    expect(res2.cleaned).toBe("Find authentic thali in Kalyan");
+
+    const res3 = cleanVoiceTranscript("Plan a weekend nature trip to Badlapur");
+    expect(res3.hasStopPhrase).toBe(false);
+    expect(res3.cleaned).toBe("Plan a weekend nature trip to Badlapur");
   });
 });

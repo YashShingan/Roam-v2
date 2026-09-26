@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import type { Action } from "@/lib/types";
 import { translate, type DictKey } from "@/lib/i18n";
 import { useRoam } from "@/lib/store";
+import { playDoneChime, playWakeChime } from "@/lib/audio-cue";
+import { cleanVoiceTranscript, matchesWakeWord } from "@/lib/voice-utils";
 import { Button, Chip, cn, SPRING } from "./ui";
 
 interface Msg {
@@ -38,11 +40,13 @@ function getRecognition(): (new () => SpeechRecognitionLike) | null {
 
 export function VoicePanel({
   open,
+  onOpen,
   onClose,
   runActions,
   onReadPlan,
 }: {
   open: boolean;
+  onOpen?: () => void;
   onClose: () => void;
   runActions: RunActions;
   onReadPlan: () => void;
@@ -58,41 +62,120 @@ export function VoicePanel({
   const [caption, setCaption] = useState<string | null>(null);
   const [ttsOn, setTtsOn] = useState(true);
   const [sttMode, setSttMode] = useState<"webspeech" | "whisper" | "unavailable">("whisper");
+  const [handsFreeOn, setHandsFreeOn] = useState(false);
   const [webllmOn, setWebllmOn] = useState(false);
   const [webllmStatus, setWebllmStatus] = useState<string | null>(null);
   const [input, setInput] = useState("");
+
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const wakeRecRef = useRef<SpeechRecognitionLike | null>(null);
+  const interimRecRef = useRef<SpeechRecognitionLike | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioContextVADRef = useRef<{ close: () => void } | null>(null);
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const whisperRef = useRef<{ transcribe: (audio: Float32Array) => Promise<string> } | null>(null);
   const webllmRef = useRef<{ generate: (prompt: string) => Promise<string> } | null>(null);
   const sessionIdRef = useRef("");
-  // lazily minted once; Math.random is impure and must not run during render
-  const sessionId = () => (sessionIdRef.current ||= `s_${Math.random().toString(36).slice(2, 10)}`);
   const listRef = useRef<HTMLDivElement>(null);
 
+  const handsFreeRef = useRef(handsFreeOn);
+  handsFreeRef.current = handsFreeOn;
+  const listeningRef = useRef(listening);
+  listeningRef.current = listening;
+  const thinkingRef = useRef(thinking);
+  thinkingRef.current = thinking;
+  const onOpenRef = useRef(onOpen);
+  onOpenRef.current = onOpen;
+
+  const sessionId = () => (sessionIdRef.current ||= `s_${Math.random().toString(36).slice(2, 10)}`);
   const voiceLocale = lang === "hi" ? "hi-IN" : lang === "mr" ? "mr-IN" : "en-IN";
 
-  const speak = useCallback(
+  // ── Natural Speech Synthesis (Edge Neural TTS + Fallback) ──────────────────
+  const stopSpeaking = useCallback((): void => {
+    if (audioPlayerRef.current) {
+      audioPlayerRef.current.pause();
+      audioPlayerRef.current.currentTime = 0;
+      audioPlayerRef.current = null;
+    }
+    if ("speechSynthesis" in window) {
+      speechSynthesis.cancel();
+    }
+    setCaption(null);
+  }, []);
+
+  const fallbackBrowserSpeak = useCallback(
     (text: string): void => {
-      if (!ttsOn) {
-        setCaption(text);
-        return;
-      }
-      if (!("speechSynthesis" in window)) {
-        setCaption(text);
-        return;
-      }
+      if (!("speechSynthesis" in window)) return;
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text.slice(0, 600));
       u.lang = voiceLocale;
       u.rate = 1.02;
-      u.onboundary = () => setCaption(text); // caption bubble while speaking
+      u.onboundary = () => setCaption(text);
       u.onstart = () => setCaption(text);
       u.onend = () => setTimeout(() => setCaption(null), 900);
       speechSynthesis.speak(u);
     },
-    [ttsOn, voiceLocale],
+    [voiceLocale],
   );
+
+  const speak = useCallback(
+    async (text: string): Promise<void> => {
+      stopSpeaking();
+      if (!ttsOn) {
+        setCaption(text);
+        return;
+      }
+      setCaption(text);
+
+      // 1. Studio-grade Edge Neural TTS (en-IN-NeerjaNeural, hi-IN-SwaraNeural, mr-IN-AarohiNeural)
+      try {
+        const res = await fetch("/api/voice/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, lang }),
+        });
+
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          audioPlayerRef.current = audio;
+
+          audio.onended = () => {
+            URL.revokeObjectURL(url);
+            audioPlayerRef.current = null;
+            setTimeout(() => setCaption(null), 800);
+          };
+
+          audio.onerror = () => {
+            URL.revokeObjectURL(url);
+            audioPlayerRef.current = null;
+            fallbackBrowserSpeak(text);
+          };
+
+          await audio.play();
+          return;
+        }
+      } catch {
+        // Fall through to browser speech synthesis
+      }
+
+      fallbackBrowserSpeak(text);
+    },
+    [fallbackBrowserSpeak, lang, stopSpeaking, ttsOn],
+  );
+
+  // ── Wake Word Spotter ("Hey Vibe" / "Hey Roamy") ───────────────────────────
+  const stopWakeSpotter = useCallback((): void => {
+    if (wakeRecRef.current) {
+      try {
+        wakeRecRef.current.stop();
+      } catch {
+        // ignore
+      }
+      wakeRecRef.current = null;
+    }
+  }, []);
 
   // ── Submit a transcript through the NLU ladder ────────────────────────────
   const submit = useCallback(
@@ -102,6 +185,7 @@ export function VoicePanel({
       setMessages((m) => [...m, { role: "user", text: transcript }]);
       setInterim("");
       setThinking(true);
+      thinkingRef.current = true;
 
       try {
         // 1) WebLLM (opt-in, on-device, WebGPU)
@@ -110,15 +194,17 @@ export function VoicePanel({
           const raw = await webllmRef.current.generate(JSON.stringify({ transcript, city: useRoam.getState().lastCity }));
           const parsed = JSON.parse(raw) as { actions?: Action[]; reply?: string };
           setThinking(false);
+          thinkingRef.current = false;
           setWebllmStatus(null);
           const actions = parsed.actions ?? [];
           const reply = parsed.reply ?? "Done — on-device model handled that.";
           setMessages((m) => [...m, { role: "roam", text: reply }]);
-          speak(reply);
+          void speak(reply);
           runActions(actions, reply, "webllm");
           return;
         }
-        // 2) Server rules (+ optional Ollama via env)
+
+        // 2) Server rules (+ optional Groq/OpenRouter/Ollama via env)
         const res = await fetch("/api/assistant", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -126,11 +212,13 @@ export function VoicePanel({
         });
         const data = (await res.json()) as { actions: Action[]; reply: string; nlu: string };
         setThinking(false);
+        thinkingRef.current = false;
         setMessages((m) => [...m, { role: "roam", text: data.reply }]);
-        speak(data.reply);
+        void speak(data.reply);
         runActions(data.actions ?? [], data.reply, data.nlu);
       } catch {
         setThinking(false);
+        thinkingRef.current = false;
         const fallback = "I couldn't reach my language brain — but I'm still here. Try “plan a one-day food trip in Kalyan under ₹500”.";
         setMessages((m) => [...m, { role: "roam", text: fallback }]);
         setCaption(fallback);
@@ -139,9 +227,12 @@ export function VoicePanel({
     [runActions, speak, webllmOn],
   );
 
-  // ── High-Accuracy Whisper Large v3 / Browser Speech listening ───────────────
+  // ── High-Accuracy Whisper Large v3 / Dual Smart Stop ────────────────────────
   const startWhisperCapture = useCallback(async (): Promise<void> => {
     try {
+      stopSpeaking();
+      stopWakeSpotter();
+
       if (!navigator.mediaDevices?.getUserMedia) {
         toast.error("Microphone recording not supported on this browser.");
         setSttMode("webspeech");
@@ -163,14 +254,109 @@ export function VoicePanel({
         if (e.data && e.data.size > 0) chunks.push(e.data);
       };
 
+      // ── Dual Smart Stop #1: In-browser 3.2s Silence VAD Analyser ───
+      try {
+        const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (AudioContextClass) {
+          const ctx = new AudioContextClass();
+          const source = ctx.createMediaStreamSource(stream);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 256;
+          source.connect(analyser);
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+          let hasSpoken = false;
+          let lastSpokenAt = Date.now();
+          let isVADActive = true;
+
+          const interval = setInterval(() => {
+            if (!isVADActive) return;
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            const avg = sum / dataArray.length;
+
+            if (avg > 12) {
+              hasSpoken = true;
+              lastSpokenAt = Date.now();
+            } else if (hasSpoken && Date.now() - lastSpokenAt > 3200) {
+              // 3.2 seconds of comfortable thinking silence after speaking
+              isVADActive = false;
+              clearInterval(interval);
+              if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+                playDoneChime();
+                mediaRecorderRef.current.stop();
+              }
+            }
+          }, 150);
+
+          audioContextVADRef.current = {
+            close: () => {
+              isVADActive = false;
+              clearInterval(interval);
+              try {
+                ctx.close();
+              } catch {}
+            },
+          };
+        }
+      } catch {
+        // ignore
+      }
+
+      // ── Dual Smart Stop #2: Interim Verbal Stop Phrase Detector ("that's it", "done") ───
+      const Ctor = getRecognition();
+      if (Ctor) {
+        const interimRec = new Ctor();
+        interimRecRef.current = interimRec;
+        interimRec.lang = voiceLocale;
+        interimRec.continuous = true;
+        interimRec.interimResults = true;
+
+        interimRec.onresult = (e) => {
+          let curr = "";
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            curr += e.results[i][0].transcript;
+          }
+          if (curr) {
+            setInterim(curr);
+            const { hasStopPhrase } = cleanVoiceTranscript(curr);
+            if (hasStopPhrase) {
+              playDoneChime();
+              toast.success("✓ 'That's it' heard — planning your trip!");
+              try {
+                interimRec.stop();
+              } catch {}
+              if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+                mediaRecorderRef.current.stop();
+              }
+            }
+          }
+        };
+        interimRec.onerror = () => {};
+        try {
+          interimRec.start();
+        } catch {}
+      }
+
       recorder.onstop = async () => {
         stream.getTracks().forEach((tr) => tr.stop());
+        audioContextVADRef.current?.close();
+        audioContextVADRef.current = null;
+        if (interimRecRef.current) {
+          try {
+            interimRecRef.current.stop();
+          } catch {}
+          interimRecRef.current = null;
+        }
         mediaRecorderRef.current = null;
         setListening(false);
+        listeningRef.current = false;
 
         if (chunks.length === 0) return;
 
         setThinking(true);
+        thinkingRef.current = true;
         setWebllmStatus("Transcribing with Whisper Large v3…");
 
         try {
@@ -185,13 +371,16 @@ export function VoicePanel({
 
           setWebllmStatus(null);
           setThinking(false);
+          thinkingRef.current = false;
 
           if (res.ok) {
             const data = (await res.json()) as { text?: string };
             const transcribed = data.text?.trim();
             if (transcribed) {
-              setInterim(transcribed);
-              void submit(transcribed);
+              const { cleaned } = cleanVoiceTranscript(transcribed);
+              const finalPrompt = cleaned || transcribed;
+              setInterim(finalPrompt);
+              void submit(finalPrompt);
               return;
             } else {
               toast.message("Didn't catch any audio — tap and speak again.");
@@ -206,15 +395,18 @@ export function VoicePanel({
         } catch {
           setWebllmStatus(null);
           setThinking(false);
+          thinkingRef.current = false;
           toast.error("Audio upload error — try typing or browser speech.");
         }
       };
 
       recorder.start();
       setListening(true);
-      toast.message("Recording… tap the mic orb again when done.");
+      listeningRef.current = true;
+      toast.message("Listening… say 'that’s it' or pause when done.");
     } catch (err) {
       setListening(false);
+      listeningRef.current = false;
       if (err instanceof DOMException && err.name === "NotAllowedError") {
         toast.error("Microphone permission denied.");
       } else {
@@ -222,10 +414,11 @@ export function VoicePanel({
         setSttMode("webspeech");
       }
     }
-  }, [submit]);
+  }, [stopSpeaking, stopWakeSpotter, submit, voiceLocale]);
 
   const startListening = useCallback((): void => {
-    if ("speechSynthesis" in window) speechSynthesis.cancel(); // barge-in
+    stopSpeaking();
+    stopWakeSpotter();
     if (sttMode === "whisper") {
       void startWhisperCapture();
       return;
@@ -233,13 +426,13 @@ export function VoicePanel({
     const Ctor = getRecognition();
     if (!Ctor) {
       setSttMode("unavailable");
-      toast.message("This browser has no Web Speech API — text chat always works (that's the Firefox path).");
+      toast.message("This browser has no Web Speech API — text chat always works.");
       return;
     }
     const rec = new Ctor();
     recognitionRef.current = rec;
     rec.lang = voiceLocale;
-    rec.continuous = false;
+    rec.continuous = true;
     rec.interimResults = true;
     rec.onresult = (e) => {
       let finalText = "";
@@ -249,28 +442,95 @@ export function VoicePanel({
         if (r.isFinal) finalText += r[0].transcript;
         else interimText += r[0].transcript;
       }
-      setInterim(interimText || finalText);
-      if (finalText) void submit(finalText);
+      const activeText = interimText || finalText;
+      setInterim(activeText);
+
+      const { cleaned, hasStopPhrase } = cleanVoiceTranscript(activeText);
+      if (hasStopPhrase) {
+        playDoneChime();
+        toast.success("✓ 'That's it' heard — planning your trip!");
+        rec.stop();
+        setListening(false);
+        listeningRef.current = false;
+        void submit(cleaned || activeText);
+      } else if (finalText) {
+        void submit(cleaned || finalText);
+      }
     };
     rec.onerror = (e) => {
       setListening(false);
+      listeningRef.current = false;
       if (e.error === "not-allowed") toast.error("Microphone permission denied — use text chat instead.");
       else if (e.error !== "aborted") toast.message("Voice hiccup — try again or type below.");
     };
-    rec.onend = () => setListening(false);
+    rec.onend = () => {
+      setListening(false);
+      listeningRef.current = false;
+    };
     rec.start();
     setListening(true);
-  }, [startWhisperCapture, sttMode, submit, voiceLocale]);
+    listeningRef.current = true;
+  }, [startWhisperCapture, stopSpeaking, stopWakeSpotter, sttMode, submit, voiceLocale]);
 
   const stopListening = useCallback((): void => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
+    audioContextVADRef.current?.close();
+    audioContextVADRef.current = null;
     recognitionRef.current?.stop();
     setListening(false);
+    listeningRef.current = false;
   }, []);
 
-  // ── Whisper (transformers.js via WebGPU) push-to-talk fallback ────────────
+  const startWakeSpotter = useCallback((): void => {
+    stopWakeSpotter();
+    const Ctor = getRecognition();
+    if (!Ctor) return;
+    const rec = new Ctor();
+    wakeRecRef.current = rec;
+    rec.lang = voiceLocale;
+    rec.continuous = true;
+    rec.interimResults = true;
+
+    rec.onresult = (e) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const text = e.results[i][0].transcript;
+        if (matchesWakeWord(text)) {
+          playWakeChime();
+          toast.success("👋 'Hey Vibe' detected! Listening…");
+          try {
+            rec.stop();
+          } catch {}
+          onOpenRef.current?.();
+          startListening();
+          return;
+        }
+      }
+    };
+
+    rec.onerror = (e) => {
+      if (e.error === "not-allowed") {
+        setHandsFreeOn(false);
+        handsFreeRef.current = false;
+        toast.error("Microphone permission needed for hands-free wake word.");
+      }
+    };
+
+    rec.onend = () => {
+      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+        setTimeout(() => {
+          try {
+            if (handsFreeRef.current && !listeningRef.current) rec.start();
+          } catch {}
+        }, 500);
+      }
+    };
+
+    try {
+      rec.start();
+    } catch {}
+  }, [startListening, stopWakeSpotter, voiceLocale]);
 
   // ── WebLLM opt-in loader ──────────────────────────────────────────────────
   const toggleWebllm = useCallback(async (): Promise<void> => {
@@ -326,12 +586,15 @@ export function VoicePanel({
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
       }
+      audioContextVADRef.current?.close();
+      audioContextVADRef.current = null;
       recognitionRef.current?.stop();
-      if ("speechSynthesis" in window) speechSynthesis.cancel();
+      stopSpeaking();
       setListening(false);
+      listeningRef.current = false;
       setCaption(null);
     }
-  }, [open]);
+  }, [open, stopSpeaking]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -347,7 +610,7 @@ export function VoicePanel({
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 60, opacity: 0 }}
           transition={SPRING}
-          className="clay-raised-lg fixed bottom-20 sm:bottom-24 inset-x-3 sm:inset-x-auto sm:right-4 z-50 flex max-h-[75dvh] sm:max-h-[70dvh] sm:w-[400px] flex-col overflow-hidden no-print"
+          className="clay-raised-lg fixed bottom-20 sm:bottom-24 inset-x-3 sm:inset-x-auto sm:right-4 z-50 flex max-h-[75dvh] sm:max-h-[70dvh] sm:w-[420px] flex-col overflow-hidden no-print"
           role="dialog"
           aria-label="Roam voice assistant"
         >
@@ -465,7 +728,27 @@ export function VoicePanel({
           {/* toggles */}
           <div className="flex flex-wrap items-center gap-1.5 border-t border-border px-3 py-2">
             <Chip active={ttsOn} className="h-7 text-[11px]" onClick={() => setTtsOn(!ttsOn)} aria-pressed={ttsOn}>
-              {ttsOn ? <Volume2 size={12} /> : <VolumeX size={12} />} TTS
+              {ttsOn ? <Volume2 size={12} /> : <VolumeX size={12} />} Neural TTS
+            </Chip>
+            <Chip
+              active={handsFreeOn}
+              className="h-7 text-[11px]"
+              onClick={() => {
+                const next = !handsFreeOn;
+                setHandsFreeOn(next);
+                handsFreeRef.current = next;
+                if (next) {
+                  toast.success("Hands-Free active! Say 'Hey Vibe' or 'Hey Roamy' anytime.");
+                  startWakeSpotter();
+                } else {
+                  stopWakeSpotter();
+                  toast.message("Hands-Free disabled.");
+                }
+              }}
+              title="Hands-free wake word listening for 'Hey Vibe' or 'Hey Roamy'"
+            >
+              <span className={cn("inline-block h-1.5 w-1.5 rounded-full mr-1", handsFreeOn ? "bg-emerald-400 animate-pulse" : "bg-muted-foreground")} />
+              Hey Vibe
             </Chip>
             <Chip
               active={sttMode === "whisper"}

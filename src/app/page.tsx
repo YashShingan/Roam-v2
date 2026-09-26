@@ -746,6 +746,7 @@ export default function Home() {
       <CompareTray places={places} onOpen={() => setCompareOpen(true)} />
       <VoicePanel
         open={voiceOpen}
+        onOpen={() => setVoiceOpen(true)}
         onClose={() => setVoiceOpen(false)}
         runActions={runActions}
         onReadPlan={() => {
