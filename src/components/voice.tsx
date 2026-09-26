@@ -57,11 +57,12 @@ export function VoicePanel({
   const [thinking, setThinking] = useState(false);
   const [caption, setCaption] = useState<string | null>(null);
   const [ttsOn, setTtsOn] = useState(true);
-  const [sttMode, setSttMode] = useState<"webspeech" | "whisper" | "unavailable">("webspeech");
+  const [sttMode, setSttMode] = useState<"webspeech" | "whisper" | "unavailable">("whisper");
   const [webllmOn, setWebllmOn] = useState(false);
   const [webllmStatus, setWebllmStatus] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const whisperRef = useRef<{ transcribe: (audio: Float32Array) => Promise<string> } | null>(null);
   const webllmRef = useRef<{ generate: (prompt: string) => Promise<string> } | null>(null);
   const sessionIdRef = useRef("");
@@ -138,47 +139,88 @@ export function VoicePanel({
     [runActions, speak, webllmOn],
   );
 
-  // ── Web Speech listening ──────────────────────────────────────────────────
+  // ── High-Accuracy Whisper Large v3 / Browser Speech listening ───────────────
   const startWhisperCapture = useCallback(async (): Promise<void> => {
     try {
-      if (!whisperRef.current) {
-        setWebllmStatus("loading Whisper (first time ≈ 40 MB)…");
-        const mod = (await cdnImport("https://esm.sh/@huggingface/transformers@3.7.5")) as {
-          pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<(audio: Float32Array) => Promise<{ text: string }>>;
-        };
-        const pipe = await mod.pipeline("automatic-speech-recognition", "onnx-community/whisper-base", { dtype: "q8" });
-        whisperRef.current = { transcribe: async (audio) => (await pipe(audio)).text };
-        setWebllmStatus(null);
+      if (!navigator.mediaDevices?.getUserMedia) {
+        toast.error("Microphone recording not supported on this browser.");
+        setSttMode("webspeech");
+        return;
       }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : MediaRecorder.isTypeSupported("audio/mp4")
+        ? "audio/mp4"
+        : "";
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
       const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => chunks.push(e.data);
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+
       recorder.onstop = async () => {
         stream.getTracks().forEach((tr) => tr.stop());
-        setWebllmStatus("transcribing on-device…");
-        const blob = new Blob(chunks, { type: recorder.mimeType });
-        const ctx = new AudioContext({ sampleRate: 16000 });
-        const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
-        ctx.close();
-        const audio = buf.getChannelData(0);
-        const text = await whisperRef.current!.transcribe(audio);
-        setWebllmStatus(null);
-        if (text) void submit(text);
+        mediaRecorderRef.current = null;
+        setListening(false);
+
+        if (chunks.length === 0) return;
+
+        setThinking(true);
+        setWebllmStatus("Transcribing with Whisper Large v3…");
+
+        try {
+          const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          const formData = new FormData();
+          formData.append("file", blob, "audio.webm");
+
+          const res = await fetch("/api/voice/transcribe", {
+            method: "POST",
+            body: formData,
+          });
+
+          setWebllmStatus(null);
+          setThinking(false);
+
+          if (res.ok) {
+            const data = (await res.json()) as { text?: string };
+            const transcribed = data.text?.trim();
+            if (transcribed) {
+              setInterim(transcribed);
+              void submit(transcribed);
+              return;
+            } else {
+              toast.message("Didn't catch any audio — tap and speak again.");
+            }
+          } else if (res.status === 501) {
+            toast.message("Groq Whisper key not configured on server — switching to browser speech.");
+            setSttMode("webspeech");
+          } else {
+            toast.error("Whisper transcription failed — falling back to browser speech.");
+            setSttMode("webspeech");
+          }
+        } catch {
+          setWebllmStatus(null);
+          setThinking(false);
+          toast.error("Audio upload error — try typing or browser speech.");
+        }
       };
+
       recorder.start();
       setListening(true);
-      toast.message("Recording… tap the orb again to stop.");
-      const stopWhenTapped = (): void => {
-        if (recorder.state !== "inactive") recorder.stop();
-        setListening(false);
-        window.removeEventListener("click", stopWhenTapped);
-      };
-      setTimeout(() => window.addEventListener("click", stopWhenTapped), 300);
-    } catch {
-      setWebllmStatus(null);
+      toast.message("Recording… tap the mic orb again when done.");
+    } catch (err) {
       setListening(false);
-      toast.error("Whisper needs WebGPU + mic permission — falling back to text chat.");
+      if (err instanceof DOMException && err.name === "NotAllowedError") {
+        toast.error("Microphone permission denied.");
+      } else {
+        toast.error("Failed to start voice recording — switched to browser speech.");
+        setSttMode("webspeech");
+      }
     }
   }, [submit]);
 
@@ -218,9 +260,12 @@ export function VoicePanel({
     rec.onend = () => setListening(false);
     rec.start();
     setListening(true);
-  }, [sttMode, submit, voiceLocale]);
+  }, [startWhisperCapture, sttMode, submit, voiceLocale]);
 
   const stopListening = useCallback((): void => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
     recognitionRef.current?.stop();
     setListening(false);
   }, []);
@@ -278,6 +323,9 @@ export function VoicePanel({
 
   useEffect(() => {
     if (!open) {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
       recognitionRef.current?.stop();
       if ("speechSynthesis" in window) speechSynthesis.cancel();
       setListening(false);
@@ -423,9 +471,9 @@ export function VoicePanel({
               active={sttMode === "whisper"}
               className="h-7 text-[11px]"
               onClick={() => setSttMode(sttMode === "whisper" ? "webspeech" : "whisper")}
-              title="Push-to-talk with on-device Whisper (WebGPU)"
+              title="Toggle Whisper Large v3 (Fast Cloud STT) / Browser Web Speech"
             >
-              Whisper STT
+              {sttMode === "whisper" ? "Whisper Large v3" : "Browser STT"}
             </Chip>
             <Chip active={webllmOn} className="h-7 text-[11px]" onClick={() => void toggleWebllm()} title="Opt-in on-device LLM (WebGPU, ~500 MB)">
               <Zap size={12} /> WebLLM

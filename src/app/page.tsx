@@ -20,6 +20,7 @@ import { VoicePanel } from "@/components/voice";
 import { ProviderModal } from "@/components/provider-modal";
 import { recomputePlanMetrics } from "@/lib/planner";
 import { deriveStopPriceInfo } from "@/lib/price-engine";
+import { adaptPlanForWeather, trimPlanForLateRunning } from "@/lib/circumstance-adapter";
 import {
   Attribution,
   HealthDrawer,
@@ -372,9 +373,26 @@ export default function Home() {
               hiddenGem: a.hiddenGem ?? f.hiddenGem,
             }));
             break;
-          case "plan_trip":
-            void replan({ days: a.days, hoursPerDay: a.hoursPerDay, interests: a.interests, budget: a.budget, vibe: a.vibe });
+          case "plan_trip": {
+            if (a.city && a.city.toLowerCase() !== (city || "").toLowerCase()) {
+              selectCity(a.city, a.city);
+            }
+            void replan({
+              days: a.days,
+              hoursPerDay: a.hoursPerDay,
+              interests: a.interests,
+              budget: a.budget,
+              vibe: a.vibe,
+              includeBreakfast: a.includeBreakfast,
+              includeLunch: a.includeLunch,
+              includeDinner: a.includeDinner,
+              persona: a.persona,
+              timeMode: a.timeMode,
+              startAnchor: a.startAnchor,
+            });
+            setPlanOpen(true);
             break;
+          }
           case "surprise_me": {
             const pool = places.filter((p) => p.community.hiddenGem).concat(places);
             const pick = pool[Math.floor(Math.random() * Math.min(pool.length, 20))];
@@ -432,6 +450,33 @@ export default function Home() {
             }
             break;
           }
+          case "adapt_weather": {
+            if (!plan) {
+              toast.message("No active plan to adapt. Generate a plan first!");
+              break;
+            }
+            const pool = placesQuery.data?.places ?? places;
+            const res = adaptPlanForWeather(plan, pool, a.condition ?? "rain");
+            setPlan(res.plan);
+            setPlanOpen(true);
+            toast.success(res.message);
+            break;
+          }
+          case "running_late": {
+            if (!plan) {
+              toast.message("No active plan to adjust.");
+              break;
+            }
+            const res = trimPlanForLateRunning(plan, 0, a.delayMinutes ?? 60);
+            setPlan(res.plan);
+            setPlanOpen(true);
+            if (res.trimmedStopName) {
+              toast.success(`Recovered time by trimming “${res.trimmedStopName}”. Route reslotted!`);
+            } else {
+              toast.message("Schedule reslotted for delay.");
+            }
+            break;
+          }
           case "add_stop":
           case "remove_stop":
           case "reorder":
@@ -441,7 +486,7 @@ export default function Home() {
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [places, plan, weatherQuery, placesQuery.data, replan, selectCity],
+    [places, plan, weatherQuery, placesQuery.data, replan, selectCity, setPlan],
   );
 
   // ── keyboard shortcuts ────────────────────────────────────────────────────

@@ -244,9 +244,16 @@ export type Action =
       type: "plan_trip";
       hoursPerDay: number;
       days: number;
+      city?: string;
       interests?: Category[];
       budget?: number;
       vibe?: Vibe;
+      includeBreakfast?: boolean;
+      includeLunch?: boolean;
+      includeDinner?: boolean;
+      persona?: TravelerPersona;
+      startAnchor?: StartAnchor;
+      timeMode?: TimeMode;
     }
   | { type: "add_stop"; name: string }
   | { type: "remove_stop"; name: string }
@@ -255,12 +262,14 @@ export type Action =
   | { type: "compare"; names: string[] }
   | { type: "read_day_plan" }
   | { type: "navigate_to"; name: string }
+  | { type: "adapt_weather"; condition: "rain" | "heat" }
+  | { type: "running_late"; delayMinutes?: number }
   | { type: "answer"; topic: "weather" | "best_time" | "price" | "crowd"; about?: string };
 
 export interface AssistantResponse {
   actions: Action[];
   reply: string;
-  nlu: "rules" | "webllm" | "ollama";
+  nlu: "rules" | "webllm" | "ollama" | "groq" | "openrouter";
   sessionId: string;
 }
 
