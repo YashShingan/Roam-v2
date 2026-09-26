@@ -1,1 +1,11 @@
-(empty)
+node_modules/
+.next/
+data/
+*.log
+.env*
+!.env.example
+.DS_Store
+__pycache__/
+*.pyc
+
+*.tsbuildinfo

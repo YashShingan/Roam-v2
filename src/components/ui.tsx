@@ -228,13 +228,11 @@ export function Modal({
             role="dialog"
             aria-modal="true"
             aria-labelledby={labelledBy}
-            // Keyed by mode so maximize/restore never replays the *entry* animation
-            // (the old code animated with the slide-in variant when toggling, which
-            // visually overrode/clobbered whatever was behind the sheet).
-            key={side && !maximized ? "sheet" : maximized ? "maximized" : "dialog"}
-            initial={{ opacity: 0, ...(side && !maximized ? { x: 24 } : { y: 24, scale: 0.98 }) }}
+            // Stable key so maximize/restore toggles smoothly resize without unmounting or resetting scroll position
+            key={side ? "side-modal" : "center-modal"}
+            initial={{ opacity: 0, ...(side ? { x: 24 } : { y: 24, scale: 0.98 }) }}
             animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
-            exit={{ opacity: 0, ...(side && !maximized ? { x: 32 } : { y: 32, scale: 0.98 }) }}
+            exit={{ opacity: 0, ...(side ? { x: 32 } : { y: 32, scale: 0.98 }) }}
             transition={SPRING}
             className={cn(
               "relative clay-raised-lg bg-card overflow-hidden flex flex-col transition-all duration-300",

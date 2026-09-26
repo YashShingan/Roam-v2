@@ -322,6 +322,15 @@ describe("Trip Planner Route Optimization & Strict Category Selection", () => {
 
     expect(walkMinutes).toBeGreaterThan(driveMinutes * 2);
     expect(recomputedDrive.days[0].stops[1].note).toContain("drive");
+
+    const transitPlan = structuredClone(walkPlan);
+    transitPlan.transportMode = "transit";
+    const recomputedTransit = recomputePlanMetrics(transitPlan, {
+      reslot: true,
+      recalcTravelFromMode: true,
+    });
+    expect(recomputedTransit.days[0].stops[1].note).toContain("transit");
+    expect(recomputedTransit.days[0].stops[1].gmapsDirectionsUrl).toContain("travelmode=transit");
   });
 
   it("honors lockedPlaceIds (👍 Keep) and excludedPlaceIds (👎 Swap) on Re-plan", async () => {

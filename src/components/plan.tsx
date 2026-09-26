@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import {
   ArrowDown,
   ArrowUp,
+  Bus,
   Car,
   CheckCircle2,
   Circle,
@@ -1101,7 +1102,7 @@ export function PlanSheet({
         )}
       </div>
       <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <MapPin size={11} /> Legs use OSRM {transportMode === "drive" ? "driving" : "walking"} routes (2-opt shortest path).{" "}
+        <MapPin size={11} /> Legs use {transportMode === "drive" ? "OSRM driving" : transportMode === "transit" ? "public transit / auto" : "OSRM walking"} routes (2-opt shortest path).{" "}
         {plan.budgetBand && plan.budgetBand.pricedCount > 0
           ? `Estimated spend ₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}–₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.max)} per person (${plan.budgetBand.pricedCount}/${plan.budgetBand.totalStops} priced).`
           : "Stop prices vary — no fabricated estimates."}
@@ -1144,6 +1145,16 @@ export function PlanSheet({
                 title="Driving / Auto OSRM route"
               >
                 <Car size={12} /> Drive
+              </button>
+              <button
+                onClick={() => handleTransportSwitch("transit")}
+                className={cn(
+                  "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold transition-all",
+                  transportMode === "transit" ? "bg-primary text-primary-foreground shadow-sm" : "bg-surface text-muted-foreground",
+                )}
+                title="Public transit / bus / auto route"
+              >
+                <Bus size={12} /> Transit
               </button>
             </div>
           </div>
@@ -1644,7 +1655,7 @@ export function PlanSheet({
           <p className="text-[12px] text-muted-foreground flex flex-wrap items-center gap-1.5">
             <span>
               <b>Day {dayIdx + 1}:</b> {day.totalHours} h total · ~{day.walkKm ?? 0} km{" "}
-              {transportMode === "drive" ? "driving" : "walking"} · {day.stops.length} stops
+              {transportMode === "drive" ? "driving" : transportMode === "transit" ? "transit" : "walking"} · {day.stops.length} stops
             </span>
             <span className="text-[11px] text-primary/80">
               (Tip: click any travel time or duration badge below to customize minutes)
