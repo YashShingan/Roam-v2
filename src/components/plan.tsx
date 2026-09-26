@@ -4,29 +4,55 @@ import { motion } from "framer-motion";
 import {
   ArrowDown,
   ArrowUp,
+  Car,
   CheckCircle2,
   Circle,
+  Clock,
+  Compass,
   Download,
+  ExternalLink,
+  Footprints,
+  ListChecks,
+  LocateFixed,
   Lock,
   LockOpen,
+  Map as MapIcon,
   MapPin,
   Navigation,
   Printer,
   QrCode,
   Share2,
+  Sparkles,
   ThumbsDown,
   ThumbsUp,
   Volume2,
   X,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import type { Experience, TripPlan, Vibe } from "@/lib/types";
+import {
+  CATEGORIES,
+  type Category,
+  type Experience,
+  type StartAnchor,
+  type TimeMode,
+  type TransportMode,
+  type TripPlan,
+  type Vibe,
+} from "@/lib/types";
+import { CATEGORY_LABEL } from "@/lib/catalog";
 import { translate, type DictKey } from "@/lib/i18n";
 import { useRoam } from "@/lib/store";
 import { download, icsForPlan, planToText } from "@/lib/exports";
+import { buildMultiStopGmapsUrl, recomputePlanMetrics } from "@/lib/planner";
 import { Button, Modal, Slider, cn, SPRING } from "./ui";
 import { CATEGORY_EMOJI } from "./cards";
+
+const EmbeddedRouteMap = dynamic(() => import("./map").then((m) => m.MapView), {
+  ssr: false,
+  loading: () => <div className="skeleton-shimmer h-56 w-full rounded-2xl" />,
+});
 
 export const VIBES: { id: string; label: string }[] = [
   { id: "all", label: "✨ All-Round" },
@@ -45,72 +71,573 @@ export const TIME_BADGES: Record<string, { label: string; icon: string; bg: stri
   evening: { label: "Evening", icon: "🛍️", bg: "bg-purple-500/10 text-purple-700 dark:text-purple-300" },
 };
 
+export interface ReplanOptions {
+  days: number;
+  hoursPerDay: number;
+  interests?: Category[];
+  strictCategories?: boolean;
+  selectedPlaceIds?: string[];
+  lockedPlaceIds?: string[];
+  excludedPlaceIds?: string[];
+  transportMode?: TransportMode;
+  timeMode?: TimeMode;
+  startAnchor?: StartAnchor;
+  vibe?: Vibe;
+}
+
 export function PlanSheet({
   open,
   onClose,
   onReplan,
   onOpenPlace,
+  onViewOnMap,
+  places = [],
+  activeCategories = [],
+  cityCenter,
 }: {
   open: boolean;
   onClose: () => void;
-  onReplan: (req: { days: number; hoursPerDay: number; vibe?: Vibe }) => void;
+  onReplan: (req: ReplanOptions) => void;
   onOpenPlace: (exp: Experience) => void;
+  onViewOnMap?: () => void;
+  places?: Experience[];
+  activeCategories?: Category[];
+  cityCenter?: { lat: number; lon: number };
 }) {
   const plan = useRoam((s) => s.plan);
   const patchPlan = useRoam((s) => s.patchPlan);
+  const savedIds = useRoam((s) => s.saved);
   const lang = useRoam((s) => s.lang);
   const t = (k: DictKey) => translate(lang, k);
+
   const [dayIdx, setDayIdx] = useState(0);
   const [hours, setHours] = useState(plan ? Math.max(2, Math.min(15, Math.round(plan.days[0]?.totalHours ?? 8))) : 8);
   const [days, setDays] = useState(plan?.days.length ?? 1);
   const [selectedVibe, setSelectedVibe] = useState<string>("all");
+  const [transportMode, setTransportMode] = useState<TransportMode>(plan?.transportMode ?? "walk");
+  const [timeMode, setTimeMode] = useState<TimeMode>(plan?.timeMode ?? "recommended");
+  const [selectedCats, setSelectedCats] = useState<Category[]>(
+    plan?.selectedCategories?.length ? plan.selectedCategories : activeCategories,
+  );
+  const [selectedPlaceIds, setSelectedPlaceIds] = useState<string[]>([]);
+  const [hasCustomPlaceSelection, setHasCustomPlaceSelection] = useState(false);
+  const [showPlaceSelector, setShowPlaceSelector] = useState(false);
+  const [showRouteMap, setShowRouteMap] = useState(true);
+  const [anchorType, setAnchorType] = useState<"city" | "gps" | "place">(plan?.startAnchor?.type ?? "city");
+  const [anchorPlaceId, setAnchorPlaceId] = useState<string>(plan?.startAnchor?.placeId ?? "");
+  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lon: number } | null>(null);
+  const [editingStopIdx, setEditingStopIdx] = useState<number | null>(null);
   const [qr, setQr] = useState<string | null>(null);
-  const [votes, setVotes] = useState<Record<string, number>>({});
+  const [reactions, setReactions] = useState<Record<string, 1 | -1 | 0>>({});
   const speakingRef = useRef(false);
+
+  // Sync local categories when main grid filter changes and no custom categories set yet
+  useEffect(() => {
+    if (activeCategories.length > 0 && selectedCats.length === 0) {
+      setSelectedCats(activeCategories);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCategories]);
+
+  // Sync selectedPlaceIds with current plan's stops when plan loads
+  useEffect(() => {
+    if (plan) {
+      const stopIds = plan.days.flatMap((d) => d.stops.map((s) => s.experienceId));
+      setSelectedPlaceIds(stopIds);
+      setHasCustomPlaceSelection(false);
+      // Seed reactions from locked stops while clearing stale dislikes from swapped stops
+      const nextReactions: Record<string, 1 | -1 | 0> = {};
+      for (const d of plan.days) {
+        for (const s of d.stops) {
+          if (s.locked) nextReactions[s.experienceId] = 1;
+        }
+      }
+      setReactions(nextReactions);
+      if (plan.transportMode) setTransportMode(plan.transportMode);
+      if (plan.timeMode) setTimeMode(plan.timeMode);
+      if (plan.startAnchor) {
+        setAnchorType(plan.startAnchor.type);
+        if (plan.startAnchor.placeId) setAnchorPlaceId(plan.startAnchor.placeId);
+      }
+    } else if (savedIds.length > 0 && selectedPlaceIds.length === 0) {
+      setSelectedPlaceIds(savedIds);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan?.id]);
+
+  // Candidate places filtered strictly by selectedCats
+  const candidatePlaces = useMemo(() => {
+    if (selectedCats.length === 0) return places;
+    return places.filter((p) => selectedCats.includes(p.category));
+  }, [places, selectedCats]);
+
+  const resolveStartAnchor = (): StartAnchor => {
+    const fallbackLat = plan?.lat ?? cityCenter?.lat ?? 19.2437;
+    const fallbackLon = plan?.lon ?? cityCenter?.lon ?? 73.1355;
+    if (anchorType === "gps" && gpsCoords) {
+      return {
+        type: "gps",
+        label: "My GPS Location",
+        lat: gpsCoords.lat,
+        lon: gpsCoords.lon,
+      };
+    }
+    if (anchorType === "place" && anchorPlaceId) {
+      const found = places.find((p) => p.id === anchorPlaceId);
+      if (found && found.lat !== undefined && found.lon !== undefined) {
+        return {
+          type: "place",
+          label: found.name,
+          lat: found.lat,
+          lon: found.lon,
+          placeId: found.id,
+        };
+      }
+    }
+    return {
+      type: "city",
+      label: `${(plan?.cityLabel ?? "City").split(",")[0]} Center`,
+      lat: fallbackLat,
+      lon: fallbackLon,
+    };
+  };
+
+  const handleUseGps = () => {
+    if (!("geolocation" in navigator)) {
+      toast.error("Geolocation is not supported by this browser");
+      return;
+    }
+    toast.message("Acquiring your GPS coordinates…");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        setGpsCoords(coords);
+        setAnchorType("gps");
+        toast.success("Start anchor set to your GPS location");
+      },
+      () => {
+        toast.error("Could not read GPS location — check browser permissions");
+      },
+      { enableHighAccuracy: true, timeout: 8000 },
+    );
+  };
+
+  const toggleCategory = (cat: Category) => {
+    setSelectedCats((prev) => {
+      const next = prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat];
+      // Clear selectedPlaceIds that don't belong to the newly restricted categories
+      if (next.length > 0) {
+        setSelectedPlaceIds((ids) =>
+          ids.filter((id) => {
+            const p = places.find((x) => x.id === id);
+            return p ? next.includes(p.category) : false;
+          }),
+        );
+      }
+      return next;
+    });
+  };
+
+  const toggleCandidatePlace = (id: string) => {
+    setHasCustomPlaceSelection(true);
+    setSelectedPlaceIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const triggerRouteCalculation = (overrides?: Partial<ReplanOptions> & { forceUseSelectedIds?: boolean }) => {
+    const cats = overrides?.interests ?? (selectedCats.length > 0 ? selectedCats : undefined);
+    const currentStops = plan?.days.flatMap((d) => d.stops) ?? [];
+    const excludedIds =
+      overrides?.excludedPlaceIds ??
+      Object.entries(reactions)
+        .filter(([, val]) => val === -1)
+        .map(([id]) => id);
+
+    // Locked stops: explicitly locked or liked (👍); if any stop is disliked (👎), also keep non-disliked stops locked so only disliked stops get swapped out
+    const hasDislikes = excludedIds.length > 0;
+    const lockedIds =
+      overrides?.lockedPlaceIds ??
+      currentStops
+        .filter((s) => {
+          if (excludedIds.includes(s.experienceId)) return false;
+          if (s.locked || reactions[s.experienceId] === 1) return true;
+          return hasDislikes;
+        })
+        .map((s) => s.experienceId);
+
+    const validIds = selectedPlaceIds.filter((id) => {
+      if (excludedIds.includes(id)) return false;
+      const p = places.find((x) => x.id === id);
+      if (!p) return false;
+      return !cats || cats.length === 0 || cats.includes(p.category);
+    });
+
+    const useExplicitSelectedIds =
+      overrides?.selectedPlaceIds !== undefined
+        ? overrides.selectedPlaceIds
+        : (overrides?.forceUseSelectedIds || hasCustomPlaceSelection || !plan) && validIds.length > 0
+          ? validIds
+          : undefined;
+
+    onReplan({
+      days,
+      hoursPerDay: hours,
+      interests: cats,
+      strictCategories: true,
+      selectedPlaceIds: useExplicitSelectedIds,
+      lockedPlaceIds: lockedIds.length > 0 ? lockedIds : undefined,
+      excludedPlaceIds: excludedIds.length > 0 ? excludedIds : undefined,
+      transportMode: overrides?.transportMode ?? transportMode,
+      timeMode: overrides?.timeMode ?? timeMode,
+      startAnchor: overrides?.startAnchor ?? resolveStartAnchor(),
+      vibe: overrides?.vibe ?? (selectedVibe === "all" ? undefined : (selectedVibe as Vibe)),
+    });
+  };
+
+  /**
+   * Re-fetches OSRM leg geometry & travel durations from /api/route for Day dIdx
+   * and runs recomputePlanMetrics so any stop mutation (move, delete, mode switch)
+   * updates the route polyline, travel times, slots, and price bands immediately.
+   */
+  const refreshDayRouteAndMetrics = async (
+    draftPlan: TripPlan,
+    dIdx: number,
+    preserveCustomTravelMin = false,
+  ): Promise<void> => {
+    // Immediately recompute and patch so mode switches (Walk <-> Drive) update leg minutes & totalHours in <1ms
+    const immediate = recomputePlanMetrics(draftPlan, {
+      reslot: true,
+      hoursPerDayCap: hours,
+      recalcTravelFromMode: !preserveCustomTravelMin,
+    });
+    patchPlan(immediate);
+
+    const mode = immediate.transportMode ?? transportMode;
+    const day = immediate.days[dIdx];
+    if (day && day.stops.length > 0 && !preserveCustomTravelMin) {
+      const anchor = immediate.startAnchor;
+      const stopPts = day.stops
+        .filter((s) => s.lat !== undefined && s.lon !== undefined)
+        .map((s) => [s.lat as number, s.lon as number]);
+
+      const includeAnchor =
+        anchor &&
+        stopPts.length > 0 &&
+        (Math.abs(anchor.lat - stopPts[0][0]) > 0.0005 ||
+          Math.abs(anchor.lon - stopPts[0][1]) > 0.0005);
+
+      const allPts = includeAnchor && anchor ? [[anchor.lat, anchor.lon], ...stopPts] : stopPts;
+
+      if (allPts.length >= 2) {
+        try {
+          const wp = allPts.map(([la, lo]) => `${la},${lo}`).join(";");
+          const res = await fetch(`/api/route?waypoints=${encodeURIComponent(wp)}&mode=${mode}`);
+          if (res.ok) {
+            const data = (await res.json()) as {
+              legs?: { minutes: number; km: number; geometry: [number, number][] }[];
+            };
+            if (data.legs) {
+              for (let i = 0; i < day.stops.length; i++) {
+                const legIdx = includeAnchor ? i : i - 1;
+                if (legIdx >= 0 && data.legs[legIdx]) {
+                  day.stops[i].travelMinFromPrev = data.legs[legIdx].minutes;
+                  day.stops[i].legKmFromPrev = data.legs[legIdx].km;
+                  day.stops[i].legGeometry = data.legs[legIdx].geometry;
+                } else if (i === 0 && !includeAnchor) {
+                  day.stops[i].travelMinFromPrev = 0;
+                  day.stops[i].legKmFromPrev = 0;
+                  day.stops[i].legGeometry = undefined;
+                }
+              }
+            }
+          }
+        } catch {
+          /* fallback to estimateLeg inside recomputePlanMetrics */
+        }
+      }
+    }
+
+    const recomputed = recomputePlanMetrics(immediate, {
+      reslot: true,
+      hoursPerDayCap: hours,
+      recalcTravelFromMode: !preserveCustomTravelMin,
+    });
+    patchPlan(recomputed);
+    void fetch(`/api/trip/${recomputed.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(recomputed),
+    }).catch(() => undefined);
+  };
 
   const allStops = useMemo(() => plan?.days.flatMap((d) => d.stops) ?? [], [plan]);
   const visitedCount = allStops.filter((s) => s.visited).length;
   const progress = allStops.length ? Math.round((visitedCount / allStops.length) * 100) : 0;
 
+  // ── Empty state: Interactive Route Builder ("Select Places → Form Route") ──
   if (!plan) {
     return (
       <Modal open={open} onClose={onClose} labelledBy="plan-title" side>
-        <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
-          <span className="text-4xl">🗓️</span>
-          <h2 id="plan-title" className="text-lg font-bold">No plan yet</h2>
-          <p className="max-w-xs text-sm text-muted-foreground">
-            Ask the voice assistant: <em>“plan a one-day food trip in Kalyan under ₹500”</em> — or hit{" "}
-            <span className="font-semibold">Plan my day</span> in the dock.
-          </p>
+        <div className="thin-scroll flex h-full flex-col overflow-y-auto p-4 sm:p-5 space-y-4">
+          <div>
+            <h2 id="plan-title" className="text-xl font-bold flex items-center gap-2">
+              🧭 Build Your Route
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Select categories or specific places, choose your starting point &amp; travel mode, and calculate an optimized route.
+            </p>
+          </div>
+
+          {/* 1. Category Filter */}
+          <div className="clay-raised-sm p-3.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                1. Filter Categories (Strict)
+              </span>
+              {selectedCats.length > 0 && (
+                <button
+                  onClick={() => setSelectedCats([])}
+                  className="text-[11px] font-semibold text-primary hover:underline"
+                >
+                  All categories
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {CATEGORIES.map((cat) => {
+                const active = selectedCats.includes(cat);
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => toggleCategory(cat)}
+                    className={cn(
+                      "rounded-full px-2.5 py-1 text-xs font-bold transition-all",
+                      active
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "bg-surface text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {CATEGORY_EMOJI[cat]} {CATEGORY_LABEL[cat].split(" ")[0]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 2. Starting Point */}
+          <div className="clay-raised-sm p-3.5 space-y-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              2. Starting Anchor
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => setAnchorType("city")}
+                className={cn(
+                  "flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold",
+                  anchorType === "city" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                )}
+              >
+                <MapPin size={12} /> City Center
+              </button>
+              <button
+                onClick={handleUseGps}
+                className={cn(
+                  "flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold",
+                  anchorType === "gps" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                )}
+              >
+                <LocateFixed size={12} /> My GPS
+              </button>
+              <button
+                onClick={() => setAnchorType("place")}
+                className={cn(
+                  "flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold",
+                  anchorType === "place" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                )}
+              >
+                <Compass size={12} /> Specific Place
+              </button>
+            </div>
+            {anchorType === "place" && (
+              <select
+                value={anchorPlaceId}
+                onChange={(e) => setAnchorPlaceId(e.target.value)}
+                className="w-full rounded-xl border border-border bg-surface px-3 py-1.5 text-xs font-semibold"
+              >
+                <option value="">Select starting landmark…</option>
+                {candidatePlaces.slice(0, 50).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {CATEGORY_EMOJI[p.category]} {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* 3. Candidate Places Checklist */}
+          <div className="clay-raised-sm p-3.5 space-y-2 flex-1 min-h-[180px] flex flex-col">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                3. Select Places ({selectedPlaceIds.length || "Auto Top"} of {candidatePlaces.length})
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSelectedPlaceIds(candidatePlaces.slice(0, 6).map((p) => p.id))}
+                  className="text-[11px] font-semibold text-primary hover:underline"
+                >
+                  Pick top 6
+                </button>
+                {selectedPlaceIds.length > 0 && (
+                  <button
+                    onClick={() => setSelectedPlaceIds([])}
+                    className="text-[11px] font-semibold text-muted-foreground hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="thin-scroll flex-1 overflow-y-auto max-h-56 space-y-1 pr-1">
+              {candidatePlaces.slice(0, 40).map((p) => {
+                const checked = selectedPlaceIds.includes(p.id);
+                return (
+                  <label
+                    key={p.id}
+                    className={cn(
+                      "flex items-center justify-between gap-2 rounded-xl px-2.5 py-1.5 text-xs cursor-pointer transition-colors",
+                      checked ? "bg-primary/12 font-bold text-foreground" : "hover:bg-surface text-muted-foreground",
+                    )}
+                  >
+                    <span className="flex items-center gap-2 truncate">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleCandidatePlace(p.id)}
+                        className="accent-primary rounded"
+                      />
+                      <span className="truncate">
+                        {CATEGORY_EMOJI[p.category]} {p.name}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {p.durationMinutes}m
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 4. Transport & Time Mode */}
+          <div className="clay-raised-sm p-3.5 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-muted-foreground">Mode:</span>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => setTransportMode("walk")}
+                  className={cn(
+                    "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold",
+                    transportMode === "walk" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                  )}
+                >
+                  <Footprints size={12} /> Walk
+                </button>
+                <button
+                  onClick={() => setTransportMode("drive")}
+                  className={cn(
+                    "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold",
+                    transportMode === "drive" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                  )}
+                >
+                  <Car size={12} /> Drive / Auto
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-muted-foreground">Travel Time:</span>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => setTimeMode("recommended")}
+                  className={cn(
+                    "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold",
+                    timeMode === "recommended" ? "bg-accent text-white" : "bg-surface text-muted-foreground",
+                  )}
+                >
+                  <Sparkles size={12} /> Engine Recommended
+                </button>
+                <button
+                  onClick={() => setTimeMode("capped")}
+                  className={cn(
+                    "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold",
+                    timeMode === "capped" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                  )}
+                >
+                  <Clock size={12} /> Custom Hours
+                </button>
+              </div>
+            </div>
+
+            {timeMode === "capped" && (
+              <Slider label="Hours / day cap" min={2} max={15} value={hours} onChange={setHours} format={(v) => `${v} h`} />
+            )}
+          </div>
+
+          <Button variant="primary" className="w-full justify-center py-3 font-bold" onClick={() => triggerRouteCalculation()}>
+            🗺️ Calculate Optimal Route
+          </Button>
         </div>
       </Modal>
     );
   }
 
   const day = plan.days[Math.min(dayIdx, plan.days.length - 1)];
+  const fullDayGmapsUrl = buildMultiStopGmapsUrl(day.stops, plan.startAnchor, transportMode);
 
-  const mutateStop = (dIdx: number, sIdx: number, patch: Partial<(typeof day.stops)[number]>, dir?: -1 | 1): void => {
+  const mutateStop = (
+    dIdx: number,
+    sIdx: number,
+    patch: Partial<(typeof day.stops)[number]>,
+    dir?: -1 | 1,
+  ): void => {
     const next: TripPlan = structuredClone(plan);
     const stops = next.days[dIdx].stops;
+    let reordered = false;
     if (dir && dir === -1 && sIdx > 0) {
       [stops[sIdx - 1], stops[sIdx]] = [stops[sIdx], stops[sIdx - 1]];
+      reordered = true;
     } else if (dir && dir === 1 && sIdx < stops.length - 1) {
       [stops[sIdx + 1], stops[sIdx]] = [stops[sIdx], stops[sIdx + 1]];
+      reordered = true;
     } else if (!dir) {
       stops[sIdx] = { ...stops[sIdx], ...patch };
     }
-    patchPlan(next);
-    void fetch(`/api/trip/${next.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ days: next.days }),
-    }).catch(() => undefined);
+    const editedCustomTime =
+      !reordered && (patch.travelMinFromPrev !== undefined || patch.durationMinutes !== undefined);
+    void refreshDayRouteAndMetrics(next, dIdx, editedCustomTime || !reordered);
   };
 
   const removeStop = (dIdx: number, sIdx: number): void => {
     const next: TripPlan = structuredClone(plan);
-    next.days[dIdx].stops.splice(sIdx, 1);
-    patchPlan(next);
+    const removed = next.days[dIdx].stops.splice(sIdx, 1)[0];
+    if (removed) {
+      setSelectedPlaceIds((ids) => ids.filter((id) => id !== removed.experienceId));
+    }
+    void refreshDayRouteAndMetrics(next, dIdx, false);
+  };
+
+  const handleTransportSwitch = (nextMode: TransportMode): void => {
+    setTransportMode(nextMode);
+    const next: TripPlan = structuredClone(plan);
+    next.transportMode = nextMode;
+    void refreshDayRouteAndMetrics(next, dayIdx, false);
+  };
+
+  const handleTimeModeSwitch = (nextTimeMode: TimeMode): void => {
+    setTimeMode(nextTimeMode);
+    const next: TripPlan = structuredClone(plan);
+    next.timeMode = nextTimeMode;
+    const recomputed = recomputePlanMetrics(next, { reslot: true, hoursPerDayCap: hours });
+    patchPlan(recomputed);
   };
 
   const readAloud = (): void => {
@@ -147,27 +674,69 @@ export function PlanSheet({
     }
   };
 
-  const vote = async (stopName: string, delta: 1 | -1): Promise<void> => {
-    setVotes((v) => ({ ...v, [stopName]: (v[stopName] ?? 0) + delta }));
-    try {
-      await fetch(`/api/trip/${plan.id}/vote`, {
+  const reactStop = (dIdx: number, sIdx: number, stopId: string, stopName: string, target: 1 | -1): void => {
+    const current = reactions[stopId] ?? 0;
+    const nextVal: 1 | -1 | 0 = current === target ? 0 : target;
+    setReactions((r) => ({ ...r, [stopId]: nextVal }));
+
+    // Update stop locked state in place without triggering OSRM / layout recalculation
+    const next: TripPlan = structuredClone(plan);
+    const stop = next.days[dIdx]?.stops[sIdx];
+    if (stop) {
+      stop.locked = nextVal === 1;
+      patchPlan(next);
+    }
+
+    if (nextVal === 1) {
+      toast.success(`👍 Kept "${stopName}" — locked for Re-plan`);
+    } else if (nextVal === -1) {
+      toast.message(`👎 Marked "${stopName}" to swap — click Re-plan below to replace`);
+    }
+
+    if (nextVal !== 0) {
+      void fetch(`/api/trip/${plan.id}/vote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stopName, delta }),
-      });
-    } catch {
-      toast.error("Vote failed — group mode needs the server");
+        body: JSON.stringify({ stopName, delta: nextVal }),
+      }).catch(() => undefined);
     }
   };
 
   return (
     <Modal open={open} onClose={onClose} labelledBy="plan-title" side>
       <div className="thin-scroll flex h-full flex-col overflow-y-auto print-plan">
-        <div className="sticky top-0 z-10 bg-card/90 px-4 sm:px-5 pb-3 pt-4 sm:pt-5 backdrop-blur">
-          <h2 id="plan-title" className="text-xl font-bold">🗓️ {t("plan.title")} — {plan.cityLabel.split(",")[0]}</h2>
+        <div className="sticky top-0 z-10 bg-card/95 px-4 sm:px-5 pb-3 pt-4 sm:pt-5 backdrop-blur border-b border-border/40">
+          <div className="flex items-center justify-between gap-2">
+            <h2 id="plan-title" className="text-xl font-bold truncate">
+              🗓️ {t("plan.title")} — {plan.cityLabel.split(",")[0]}
+            </h2>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => handleTransportSwitch("walk")}
+                className={cn(
+                  "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold transition-all",
+                  transportMode === "walk" ? "bg-primary text-primary-foreground shadow-sm" : "bg-surface text-muted-foreground",
+                )}
+                title="Walking OSRM route"
+              >
+                <Footprints size={12} /> Walk
+              </button>
+              <button
+                onClick={() => handleTransportSwitch("drive")}
+                className={cn(
+                  "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold transition-all",
+                  transportMode === "drive" ? "bg-primary text-primary-foreground shadow-sm" : "bg-surface text-muted-foreground",
+                )}
+                title="Driving / Auto OSRM route"
+              >
+                <Car size={12} /> Drive
+              </button>
+            </div>
+          </div>
+
           <div
             className={cn(
-              "mt-2 rounded-xl px-3.5 py-2 text-[13px] font-medium",
+              "mt-2 rounded-xl px-3.5 py-2 text-[12px] font-medium",
               plan.feasibility.ok ? "bg-accent/12 text-accent" : "bg-gold/15 text-gold",
             )}
             role="status"
@@ -175,17 +744,72 @@ export function PlanSheet({
             {plan.feasibility.ok ? "✓ " : "⚠️ "}
             {plan.feasibility.message}
           </div>
+
           {plan.budgetBand && (
-            <div className="mt-2 rounded-xl bg-surface/80 p-2.5 text-[12px] text-muted-foreground border border-border/50">
-              <span className="font-bold text-foreground">
-                💰 ₹{Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}–₹{Intl.NumberFormat("en-IN").format(plan.budgetBand.max)}
-              </span>{" "}
-              band · {plan.budgetBand.pricedCount} of {plan.budgetBand.totalStops} stops priced ({plan.budgetBand.note})
+            <div className="mt-2 rounded-xl bg-surface/80 p-2.5 text-[12px] text-muted-foreground border border-border/50 flex flex-wrap items-center justify-between gap-1">
+              <span>
+                <span className="font-bold text-foreground">
+                  💰{" "}
+                  {plan.budgetBand.pricedCount > 0
+                    ? plan.budgetBand.min === plan.budgetBand.max
+                      ? `₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}`
+                      : `₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}–₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.max)}`
+                    : "Varies"}
+                </span>{" "}
+                band · {plan.budgetBand.pricedCount} of {plan.budgetBand.totalStops} stops priced ({plan.budgetBand.note})
+              </span>
             </div>
           )}
+
+          {/* Multi-stop Route Action Bar */}
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            {fullDayGmapsUrl && (
+              <a
+                href={fullDayGmapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-1.5 text-[11px] font-bold text-primary-foreground shadow-sm hover:opacity-95"
+                title="Open full multi-stop day route in Google Maps"
+              >
+                <Navigation size={12} />
+                <span>Open Full Route in Google Maps</span>
+                <ExternalLink size={10} />
+              </a>
+            )}
+            <button
+              onClick={() => setShowRouteMap((v) => !v)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-bold",
+                showRouteMap ? "clay-pressed text-primary" : "clay-raised-sm text-muted-foreground",
+              )}
+            >
+              <MapIcon size={12} /> {showRouteMap ? "Hide Route Map" : "Show Route Map"}
+            </button>
+            {onViewOnMap && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onViewOnMap();
+                }}
+                className="clay-raised-sm inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-bold text-foreground hover:text-primary"
+              >
+                <Compass size={12} /> Full Map
+              </button>
+            )}
+            <button
+              onClick={() => setShowPlaceSelector((v) => !v)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-bold",
+                showPlaceSelector ? "bg-accent text-white" : "clay-raised-sm text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <ListChecks size={12} /> Select Places &amp; Anchor
+            </button>
+          </div>
+
           {/* visited progress */}
-          <div className="mt-3 flex items-center gap-2">
-            <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface">
+          <div className="mt-2.5 flex items-center gap-2">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface">
               <motion.div
                 className="h-full rounded-full bg-gradient-to-r from-primary to-accent"
                 initial={{ width: 0 }}
@@ -199,8 +823,211 @@ export function PlanSheet({
           </div>
         </div>
 
-        <div className="px-4 sm:px-5 pb-6">
-          {/* day tabs */}
+        <div className="px-4 sm:px-5 pb-6 pt-3 space-y-3">
+          {/* Embedded Interactive Route Map Preview with Numbered Stop Pins */}
+          {showRouteMap && day.stops.length > 0 && (
+            <div className="space-y-1.5">
+              <EmbeddedRouteMap
+                places={[]}
+                center={{
+                  lat: day.stops[0]?.lat ?? plan.lat ?? 19.2437,
+                  lon: day.stops[0]?.lon ?? plan.lon ?? 73.1355,
+                }}
+                onSelect={onOpenPlace}
+                planStops={day.stops}
+                startAnchor={plan.startAnchor ?? null}
+                fitRouteBounds
+                compact
+                savedIds={savedIds}
+                height="230px"
+              />
+              {plan.startAnchor && (
+                <p className="text-[11px] text-muted-foreground flex items-center gap-1">
+                  <MapPin size={11} className="text-emerald-600 shrink-0" />
+                  <span>
+                    Route starts from <b>{plan.startAnchor.label}</b> → {day.stops.length} ordered stops (2-opt shortest path)
+                  </span>
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Collapsible Place Selector & Category Filter & Start Anchor Builder */}
+          {showPlaceSelector && (
+            <div className="clay-raised p-3.5 space-y-3 border border-primary/25">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-primary">
+                  Customize Places, Category &amp; Start Location
+                </h3>
+                <button
+                  onClick={() => setShowPlaceSelector(false)}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  Close
+                </button>
+              </div>
+
+              {/* Strict Category Filter Pills */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-muted-foreground">
+                    Categories (strict filter — only selected types will be routed):
+                  </span>
+                  {selectedCats.length > 0 && (
+                    <button
+                      onClick={() => setSelectedCats([])}
+                      className="text-[11px] font-semibold text-primary hover:underline"
+                    >
+                      Reset to all
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {CATEGORIES.map((cat) => {
+                    const active = selectedCats.includes(cat);
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => toggleCategory(cat)}
+                        className={cn(
+                          "rounded-full px-2.5 py-1 text-[11px] font-bold transition-all",
+                          active
+                            ? "bg-primary text-primary-foreground shadow-sm"
+                            : "bg-surface text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {CATEGORY_EMOJI[cat]} {CATEGORY_LABEL[cat].split(" ")[0]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Start Anchor */}
+              <div className="space-y-1.5">
+                <span className="text-[11px] font-bold text-muted-foreground">Start Route From:</span>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => setAnchorType("city")}
+                    className={cn(
+                      "rounded-lg px-2.5 py-1 text-[11px] font-bold",
+                      anchorType === "city" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                    )}
+                  >
+                    📍 City Center
+                  </button>
+                  <button
+                    onClick={handleUseGps}
+                    className={cn(
+                      "rounded-lg px-2.5 py-1 text-[11px] font-bold",
+                      anchorType === "gps" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                    )}
+                  >
+                    🛰️ My GPS Location
+                  </button>
+                  <button
+                    onClick={() => setAnchorType("place")}
+                    className={cn(
+                      "rounded-lg px-2.5 py-1 text-[11px] font-bold",
+                      anchorType === "place" ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground",
+                    )}
+                  >
+                    🏛️ Specific Landmark
+                  </button>
+                </div>
+                {anchorType === "place" && (
+                  <select
+                    value={anchorPlaceId}
+                    onChange={(e) => setAnchorPlaceId(e.target.value)}
+                    className="w-full rounded-xl border border-border bg-surface px-2.5 py-1.5 text-xs font-semibold"
+                  >
+                    <option value="">Choose Stop #1 landmark…</option>
+                    {candidatePlaces.slice(0, 60).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {CATEGORY_EMOJI[p.category]} {p.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* Candidate Places Checklist */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-muted-foreground">
+                    Check Places to Include ({selectedPlaceIds.length} selected of {candidatePlaces.length}):
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        setHasCustomPlaceSelection(true);
+                        setSelectedPlaceIds(candidatePlaces.slice(0, 6).map((p) => p.id));
+                      }}
+                      className="text-[11px] font-semibold text-primary hover:underline"
+                    >
+                      Top 6
+                    </button>
+                    <button
+                      onClick={() => {
+                        setHasCustomPlaceSelection(false);
+                        setSelectedPlaceIds([]);
+                      }}
+                      className="text-[11px] font-semibold text-muted-foreground hover:underline"
+                    >
+                      Auto-pick best
+                    </button>
+                  </div>
+                </div>
+                <div className="thin-scroll max-h-44 overflow-y-auto space-y-1 rounded-xl bg-surface/60 p-2">
+                  {candidatePlaces.slice(0, 45).map((p) => {
+                    const checked = selectedPlaceIds.includes(p.id);
+                    return (
+                      <label
+                        key={p.id}
+                        className={cn(
+                          "flex items-center justify-between gap-2 rounded-lg px-2 py-1 text-xs cursor-pointer",
+                          checked ? "bg-primary/15 font-bold text-foreground" : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        <span className="flex items-center gap-2 truncate">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleCandidatePlace(p.id)}
+                            className="accent-primary"
+                          />
+                          <span className="truncate">
+                            {CATEGORY_EMOJI[p.category]} {p.name}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-[10px]">
+                          {p.priceHint
+                            ? p.priceHint.min === 0 && p.priceHint.max === 0
+                              ? "Free"
+                              : `₹${p.priceHint.min}`
+                            : "Varies"}{" "}
+                          · {p.durationMinutes}m
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <Button
+                variant="primary"
+                className="w-full justify-center font-bold"
+                onClick={() => {
+                  setShowPlaceSelector(false);
+                  triggerRouteCalculation({ forceUseSelectedIds: true });
+                }}
+              >
+                🔄 Calculate Route for Selected Places
+              </Button>
+            </div>
+          )}
+
+          {/* Day tabs */}
           <div className="flex gap-1.5 overflow-x-auto pb-1">
             {plan.days.map((_, i) => (
               <button
@@ -216,34 +1043,63 @@ export function PlanSheet({
             ))}
           </div>
 
-          {/* Vibe selector */}
-          <div className="mt-2.5 flex items-center gap-1.5 overflow-x-auto pb-1">
-            <span className="text-[11px] font-bold text-muted-foreground shrink-0 mr-0.5">Pacing:</span>
-            {VIBES.map((v) => (
-              <button
-                key={v.id}
-                onClick={() => {
-                  setSelectedVibe(v.id);
-                  onReplan({ days, hoursPerDay: hours, vibe: v.id === "all" ? undefined : (v.id as Vibe) });
-                }}
-                className={cn(
-                  "rounded-full px-2.5 py-1 text-[11px] font-bold transition-all shrink-0",
-                  selectedVibe === v.id ? "bg-primary text-primary-foreground shadow-sm" : "clay-raised-sm text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {v.label}
-              </button>
-            ))}
+          {/* Active Category Filter Quick Strip */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+            <span className="text-[11px] font-bold text-muted-foreground shrink-0">Category Route:</span>
+            <button
+              onClick={() => {
+                setSelectedCats([]);
+                triggerRouteCalculation({ interests: undefined, selectedPlaceIds: undefined });
+              }}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-[11px] font-bold shrink-0",
+                selectedCats.length === 0
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "clay-raised-sm text-muted-foreground hover:text-foreground",
+              )}
+            >
+              All
+            </button>
+            {CATEGORIES.map((cat) => {
+              const isOnly = selectedCats.length === 1 && selectedCats[0] === cat;
+              return (
+                <button
+                  key={cat}
+                  onClick={() => {
+                    const nextCats: Category[] = isOnly ? [] : [cat];
+                    setSelectedCats(nextCats);
+                    setSelectedPlaceIds([]);
+                    triggerRouteCalculation({
+                      interests: nextCats.length ? nextCats : undefined,
+                      selectedPlaceIds: [],
+                    });
+                  }}
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-[11px] font-bold transition-all shrink-0",
+                    selectedCats.includes(cat)
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "clay-raised-sm text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {CATEGORY_EMOJI[cat]} {CATEGORY_LABEL[cat].split(" ")[0]}
+                </button>
+              );
+            })}
           </div>
 
-          {day.walkKm !== undefined && (
-            <p className="mt-2 text-[12px] text-muted-foreground">
-              Day {dayIdx + 1}: {day.totalHours} h total · ~{day.walkKm} km walking · {day.stops.length} stops
-            </p>
-          )}
+          {/* Day Summary Line */}
+          <p className="text-[12px] text-muted-foreground flex flex-wrap items-center gap-1.5">
+            <span>
+              <b>Day {dayIdx + 1}:</b> {day.totalHours} h total · ~{day.walkKm ?? 0} km{" "}
+              {transportMode === "drive" ? "driving" : "walking"} · {day.stops.length} stops
+            </span>
+            <span className="text-[11px] text-primary/80">
+              (Tip: click any travel time or duration badge below to customize minutes)
+            </span>
+          </p>
 
-          {/* stops */}
-          <ol className="mt-3 space-y-2.5">
+          {/* Stops Timeline */}
+          <ol className="space-y-2.5">
             {day.stops.map((s, sIdx) => (
               <motion.li
                 key={`${s.experienceId}-${sIdx}`}
@@ -252,28 +1108,90 @@ export function PlanSheet({
                 className={cn("clay-raised-sm p-3.5", s.visited && "opacity-70")}
               >
                 <div className="flex items-start gap-3">
-                  <button
-                    onClick={() => mutateStop(dayIdx, sIdx, { visited: !s.visited })}
-                    aria-label={s.visited ? "Mark unvisited" : "Mark visited"}
-                    className="mt-0.5 shrink-0 text-accent"
-                  >
-                    {s.visited ? <CheckCircle2 size={19} className="fill-accent/20" /> : <Circle size={19} />}
-                  </button>
+                  <div className="flex flex-col items-center gap-1.5 mt-0.5 shrink-0">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[11px] font-extrabold text-primary-foreground shadow-sm">
+                      {sIdx + 1}
+                    </span>
+                    <button
+                      onClick={() => mutateStop(dayIdx, sIdx, { visited: !s.visited })}
+                      aria-label={s.visited ? "Mark unvisited" : "Mark visited"}
+                      className="text-accent"
+                    >
+                      {s.visited ? <CheckCircle2 size={18} className="fill-accent/20" /> : <Circle size={18} />}
+                    </button>
+                  </div>
+
                   <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <p className="text-[11px] font-bold text-primary">
                         {s.slotStart}–{s.slotEnd}
                       </p>
                       {s.timeOfDay && TIME_BADGES[s.timeOfDay] && (
-                        <span className={cn("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold", TIME_BADGES[s.timeOfDay].bg)}>
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold",
+                            TIME_BADGES[s.timeOfDay].bg,
+                          )}
+                        >
                           <span>{TIME_BADGES[s.timeOfDay].icon}</span>
                           <span>{TIME_BADGES[s.timeOfDay].label}</span>
                         </span>
                       )}
-                      {s.travelMinFromPrev > 0 && (
-                        <span className="font-semibold text-muted-foreground text-[10px]">🚶 {s.travelMinFromPrev} min walk</span>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => setEditingStopIdx(editingStopIdx === sIdx ? null : sIdx)}
+                        className="inline-flex items-center gap-1 rounded-md bg-surface px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground hover:text-primary"
+                        title="Click to adjust travel time or visit duration"
+                      >
+                        {transportMode === "drive" ? "🚗" : "🚶"} {s.travelMinFromPrev}m leg
+                        {s.legKmFromPrev ? ` (${s.legKmFromPrev} km)` : ""} · ⏱️ {s.durationMinutes}m stay ✎
+                      </button>
                     </div>
+
+                    {/* Inline Travel Time & Visit Duration Editor */}
+                    {editingStopIdx === sIdx && (
+                      <div className="mt-2 rounded-xl bg-surface/90 p-2.5 border border-border/60 flex flex-wrap items-center gap-3 text-xs">
+                        <label className="flex items-center gap-1.5 font-semibold">
+                          <span>{transportMode === "drive" ? "🚗 Leg travel (min):" : "🚶 Leg walk (min):"}</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={240}
+                            value={s.travelMinFromPrev}
+                            onChange={(e) =>
+                              mutateStop(dayIdx, sIdx, {
+                                travelMinFromPrev: Math.max(0, Number(e.target.value) || 0),
+                              })
+                            }
+                            className="w-16 rounded-lg border border-border bg-card px-2 py-0.5 text-center font-bold"
+                          />
+                        </label>
+                        <label className="flex items-center gap-1.5 font-semibold">
+                          <span>⏱️ Stay duration (min):</span>
+                          <input
+                            type="number"
+                            min={10}
+                            max={480}
+                            step={5}
+                            value={s.durationMinutes}
+                            onChange={(e) =>
+                              mutateStop(dayIdx, sIdx, {
+                                durationMinutes: Math.max(10, Number(e.target.value) || 30),
+                              })
+                            }
+                            className="w-16 rounded-lg border border-border bg-card px-2 py-0.5 text-center font-bold"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setEditingStopIdx(null)}
+                          className="ml-auto text-[11px] font-bold text-primary hover:underline"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    )}
+
                     <div className="mt-1.5 flex items-start gap-2.5">
                       {s.imageUrl && (
                         <img
@@ -286,6 +1204,11 @@ export function PlanSheet({
                       <div className="min-w-0 flex-1">
                         <button
                           onClick={() => {
+                            const existing = places.find((p) => p.id === s.experienceId);
+                            if (existing) {
+                              onOpenPlace(existing);
+                              return;
+                            }
                             const exp: Experience = {
                               id: s.experienceId,
                               name: s.name.replace(/ \(lunch anchor\)$/, ""),
@@ -315,58 +1238,102 @@ export function PlanSheet({
                         {s.note && <p className="mt-0.5 text-[12px] text-muted-foreground">{s.note}</p>}
                       </div>
                     </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                       <span
                         className={cn(
                           "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold",
-                          s.priceBasis?.includes("Varies")
+                          !s.priceBasis || s.priceBasis.includes("Varies")
                             ? "bg-surface text-muted-foreground"
-                            : "bg-primary/10 text-primary"
+                            : "bg-primary/10 text-primary",
                         )}
                         title={s.priceQuote ?? s.priceBasis}
                       >
-                        🏷️ {s.priceBasis ?? (s.pricePerPerson ? `~₹${s.pricePerPerson} pp` : "Varies")}
+                        🏷️ {s.priceBasis ?? (s.pricePerPerson !== undefined ? `~₹${s.pricePerPerson} pp` : "Varies — no reliable signal")}
                       </span>
                       {s.lat !== undefined && s.lon !== undefined && (
                         <a
-                          href={s.gmapsDirectionsUrl ?? `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`}
+                          href={
+                            s.gmapsDirectionsUrl ??
+                            `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`
+                          }
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1 rounded-md bg-surface px-2 py-0.5 text-[11px] font-semibold text-primary hover:underline"
-                          title="Open turn-by-turn directions in Google Maps"
+                          title="Open leg directions in Google Maps"
                         >
                           <Navigation size={10} />
-                          <span>Directions</span>
+                          <span>Leg Directions</span>
                         </a>
                       )}
                     </div>
                   </div>
+
                   <div className="flex shrink-0 flex-col items-center gap-1">
                     <div className="flex gap-1">
-                      <button onClick={() => mutateStop(dayIdx, sIdx, {}, -1)} disabled={sIdx === 0} aria-label="Move up" className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg disabled:opacity-40">
+                      <button
+                        onClick={() => mutateStop(dayIdx, sIdx, {}, -1)}
+                        disabled={sIdx === 0}
+                        aria-label="Move up"
+                        className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg disabled:opacity-40"
+                      >
                         <ArrowUp size={13} />
                       </button>
-                      <button onClick={() => mutateStop(dayIdx, sIdx, {}, 1)} disabled={sIdx === day.stops.length - 1} aria-label="Move down" className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg disabled:opacity-40">
+                      <button
+                        onClick={() => mutateStop(dayIdx, sIdx, {}, 1)}
+                        disabled={sIdx === day.stops.length - 1}
+                        aria-label="Move down"
+                        className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg disabled:opacity-40"
+                      >
                         <ArrowDown size={13} />
                       </button>
                     </div>
                     <div className="flex gap-1">
-                      <button onClick={() => vote(s.name, 1)} aria-label={`Vote for ${s.name}`} className="clay-raised-sm flex h-7 items-center gap-0.5 rounded-lg px-1.5 text-[11px] font-bold text-accent">
-                        <ThumbsUp size={12} /> {votes[s.name] ? `+${votes[s.name]}` : ""}
+                      <button
+                        onClick={() => reactStop(dayIdx, sIdx, s.experienceId, s.name, 1)}
+                        aria-label={`Keep ${s.name}`}
+                        title="Like & keep this stop when you Re-plan"
+                        className={cn(
+                          "flex h-7 items-center gap-0.5 rounded-lg px-1.5 text-[11px] font-bold transition-colors",
+                          reactions[s.experienceId] === 1 || s.locked
+                            ? "bg-accent text-white shadow-sm"
+                            : "clay-raised-sm text-accent hover:bg-accent/10",
+                        )}
+                      >
+                        <ThumbsUp size={12} />
+                        {reactions[s.experienceId] === 1 ? "Keep" : ""}
                       </button>
-                      <button onClick={() => vote(s.name, -1)} aria-label={`Vote against ${s.name}`} className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground">
+                      <button
+                        onClick={() => reactStop(dayIdx, sIdx, s.experienceId, s.name, -1)}
+                        aria-label={`Swap ${s.name} on Re-plan`}
+                        title="Dislike — mark to swap out when you click Re-plan"
+                        className={cn(
+                          "flex h-7 items-center gap-0.5 rounded-lg px-1.5 text-[11px] font-bold transition-colors",
+                          reactions[s.experienceId] === -1
+                            ? "bg-red-500 text-white shadow-sm"
+                            : "clay-raised-sm text-muted-foreground hover:text-red-500",
+                        )}
+                      >
                         <ThumbsDown size={12} />
+                        {reactions[s.experienceId] === -1 ? "Swap" : ""}
                       </button>
                     </div>
                     <div className="flex gap-1">
                       <button
                         onClick={() => mutateStop(dayIdx, sIdx, { locked: !s.locked })}
                         aria-label={s.locked ? "Unlock stop" : "Lock stop on re-plan"}
-                        className={cn("clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg", s.locked && "clay-pressed text-primary")}
+                        className={cn(
+                          "clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg",
+                          s.locked && "clay-pressed text-primary",
+                        )}
                       >
                         {s.locked ? <Lock size={12} /> : <LockOpen size={12} />}
                       </button>
-                      <button onClick={() => removeStop(dayIdx, sIdx)} aria-label={`Remove ${s.name}`} className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:text-red-400">
+                      <button
+                        onClick={() => removeStop(dayIdx, sIdx)}
+                        aria-label={`Remove ${s.name}`}
+                        className="clay-raised-sm flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:text-red-400"
+                      >
                         <X size={13} />
                       </button>
                     </div>
@@ -374,18 +1341,60 @@ export function PlanSheet({
                 </div>
               </motion.li>
             ))}
-            {day.stops.length === 0 && <li className="clay-raised-sm p-4 text-sm text-muted-foreground">Nothing planned this day — lower hours/day or re-plan.</li>}
+            {day.stops.length === 0 && (
+              <li className="clay-raised-sm p-4 text-sm text-muted-foreground">
+                No stops in this day — open &ldquo;Select Places &amp; Anchor&rdquo; or click Re-plan below.
+              </li>
+            )}
           </ol>
 
-          {/* controls */}
+          {/* Travel Time Mode & Replan Controls */}
           <div className="clay-raised mt-4 space-y-3 sm:space-y-4 p-3 sm:p-4 no-print">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-bold text-muted-foreground">Travel Time Schedule:</span>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => handleTimeModeSwitch("recommended")}
+                  className={cn(
+                    "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition-all",
+                    timeMode === "recommended"
+                      ? "bg-accent text-white shadow-sm"
+                      : "bg-surface text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Sparkles size={12} /> Engine Recommended ({day.totalHours} h)
+                </button>
+                <button
+                  onClick={() => handleTimeModeSwitch("capped")}
+                  className={cn(
+                    "flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-bold transition-all",
+                    timeMode === "capped"
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "bg-surface text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Clock size={12} /> Cap Hours / Day
+                </button>
+              </div>
+            </div>
+
             <div className="flex flex-wrap items-end gap-4">
-              <Slider label="Hours / day" min={2} max={15} value={hours} onChange={setHours} format={(v) => `${v} h`} />
+              {timeMode === "capped" && (
+                <Slider
+                  label="Hours / day"
+                  min={2}
+                  max={15}
+                  value={hours}
+                  onChange={setHours}
+                  format={(v) => `${v} h`}
+                />
+              )}
               <Slider label="Days" min={1} max={7} value={days} onChange={setDays} />
-              <Button variant="primary" onClick={() => onReplan({ days, hoursPerDay: hours, vibe: selectedVibe === "all" ? undefined : (selectedVibe as Vibe) })}>
+              <Button variant="primary" onClick={() => triggerRouteCalculation()}>
                 🔄 {t("plan.replan")}
               </Button>
             </div>
+
             <div className="flex flex-wrap gap-2">
               <Button onClick={readAloud}>
                 <Volume2 size={15} /> {t("plan.readAloud")}
@@ -410,8 +1419,10 @@ export function PlanSheet({
               )}
             </div>
             <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <MapPin size={11} /> Legs use OSRM walking routes; without it, straight-line ×1.4 estimates. Estimated total ₹
-              {Intl.NumberFormat("en-IN").format(plan.budgetTotal ?? 0)} per person.
+              <MapPin size={11} /> Legs use OSRM {transportMode === "drive" ? "driving" : "walking"} routes (2-opt shortest path).{" "}
+              {plan.budgetBand && plan.budgetBand.pricedCount > 0
+                ? `Estimated spend ₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.min)}–₹${Intl.NumberFormat("en-IN").format(plan.budgetBand.max)} per person (${plan.budgetBand.pricedCount}/${plan.budgetBand.totalStops} priced).`
+                : "Stop prices vary — no fabricated estimates."}
             </p>
           </div>
         </div>

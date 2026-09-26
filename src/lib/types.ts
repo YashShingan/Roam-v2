@@ -96,6 +96,17 @@ export interface Experience {
   foundViaSearch?: boolean;
 }
 
+export type TransportMode = "walk" | "drive";
+export type TimeMode = "recommended" | "capped";
+
+export interface StartAnchor {
+  type: "city" | "gps" | "place";
+  label: string;
+  lat: number;
+  lon: number;
+  placeId?: string;
+}
+
 export interface ItineraryStop {
   experienceId: string;
   name: string;
@@ -103,6 +114,7 @@ export interface ItineraryStop {
   slotStart: string;
   slotEnd: string;
   travelMinFromPrev: number;
+  legKmFromPrev?: number;
   legGeometry?: [number, number][];
   lat?: number;
   lon?: number;
@@ -125,6 +137,7 @@ export interface TripDay {
   stops: ItineraryStop[];
   totalHours: number;
   walkKm?: number;
+  driveKm?: number;
 }
 
 export interface TripPlan {
@@ -147,6 +160,10 @@ export interface TripPlan {
     unpricedCount: number;
     note: string;
   };
+  transportMode?: TransportMode;
+  timeMode?: TimeMode;
+  startAnchor?: StartAnchor;
+  selectedCategories?: Category[];
   shareUrl: string;
   votes?: Record<string, number>;
   goldenHourNotes?: string[];

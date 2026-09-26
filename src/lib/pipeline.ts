@@ -1,8 +1,9 @@
 // ─── Post-processing pipeline: transit filter → dedup → categorize → enrich ─
-import type { Category, Experience, SourceRef } from "./types";
+import type { Category, Experience, PriceSample, SourceRef } from "./types";
 import { dedupKey, haversineKm, tokenSim, meaningfulOverlap, isBareGeoFragment } from "./net";
 import { hitId, type RawHit } from "./rawhit";
 import { extractCanonicalLandmark, isJunkPlace, sanitizeCategory } from "./intelligence";
+import { parsePriceSnippets, aggregatePriceHint } from "./price-engine";
 
 // 1 ── Transit/road filter (spec §3 exact regexes)
 const DROP_RE =
@@ -313,6 +314,38 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
     const name = extractCanonicalLandmark(primary.name) || primary.name;
     const lat = primary.lat;
     const lon = primary.lon;
+    const description = primary.description || members.map((m) => m.description).find((d) => !!d);
+
+    // Extract structured price samples from descriptions, community quotes, and collector hints
+    const priceSamples: PriceSample[] = [];
+    if (description) {
+      priceSamples.push(...parsePriceSnippets(description, "description", primary.sourceUrl, category));
+    }
+    for (const q of quotes) {
+      if (q.text) {
+        priceSamples.push(...parsePriceSnippets(q.text, "community_quote", q.permalink, category));
+      }
+    }
+    for (const m of members) {
+      if (m.priceHint !== undefined && m.priceHint !== null && m.priceHint >= 0) {
+        priceSamples.push({
+          value: m.priceHint,
+          value_max: m.priceHint,
+          unit: "INR",
+          context: category === "food" ? "meal" : "entry",
+          source: m.source,
+          url: m.sourceUrl ?? null,
+          raw_snippet: m.note ?? `${m.source}: ₹${m.priceHint}`,
+          confidence: 0.7,
+        });
+      }
+    }
+    const computedPriceHint = aggregatePriceHint(priceSamples, category);
+    const resolvedPricePerPerson = computedPriceHint
+      ? Math.round(computedPriceHint.per_person ?? computedPriceHint.min)
+      : priceHints.length
+        ? Math.round(Math.min(...priceHints))
+        : undefined;
 
     const exp: Experience = {
       id: hitId("merged", `${sources[0]?.source ?? "x"}-${name}`, cityLabel.split(",")[0]),
@@ -320,7 +353,7 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
       category,
       source: sources[0]?.source ?? "OpenStreetMap",
       sources,
-      description: primary.description || members.map((m) => m.description).find((d) => !!d),
+      description,
       lat,
       lon,
       address: primary.address ?? "Not listed",
@@ -331,13 +364,14 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
         upvotes,
         sentiment: sentimentOf(quotes),
         quotes,
-        priceHint: priceHints.length ? Math.round(Math.min(...priceHints)) : undefined,
+        priceHint: resolvedPricePerPerson,
         hiddenGem: mentions <= 2 && mentions > 0 && !/mall|department/i.test(name),
         crowdWarning:
           quotes.filter((q) => /crowded|queue|rush|packed|busy/i.test(q.text)).length >= 2,
       },
-      pricePerPerson: priceHints.length ? Math.round(Math.min(...priceHints)) : PRICE_EST[category],
-      priceIsEstimate: priceHints.length === 0,
+      pricePerPerson: resolvedPricePerPerson,
+      priceIsEstimate: !computedPriceHint && priceHints.length === 0,
+      priceHint: computedPriceHint,
       durationMinutes: DURATION_EST[category],
       openingHoursRaw: members.map((m) => m.openingHoursRaw).find((o) => !!o),
       isOutdoor: primary.isOutdoor ?? category === "nature",
@@ -355,9 +389,6 @@ export function runPipeline(hits: RawHit[], cityLabel: string): Experience[] {
       bestTime: bt.bestTime,
       goldenHour: bt.goldenHour,
     };
-    if (exp.community.mentions > 0 && exp.community.priceHint) {
-      exp.community.priceHint = Math.max(exp.community.priceHint, exp.pricePerPerson ?? 0);
-    }
     return exp;
   });
 

@@ -13,8 +13,23 @@ const Body = z.object({
   days: z.number().int().min(1).max(7).default(1),
   hoursPerDay: z.number().min(2).max(15).default(8),
   interests: z.array(z.string()).max(8).optional(),
+  strictCategories: z.boolean().optional(),
+  selectedPlaceIds: z.array(z.string()).max(60).optional(),
+  lockedPlaceIds: z.array(z.string()).max(60).optional(),
+  excludedPlaceIds: z.array(z.string()).max(60).optional(),
   budget: z.number().min(0).max(100000).optional(),
   vibe: z.enum(["chill", "packed", "foodie", "heritage"]).optional(),
+  transportMode: z.enum(["walk", "drive"]).optional(),
+  timeMode: z.enum(["recommended", "capped"]).optional(),
+  startAnchor: z
+    .object({
+      type: z.enum(["city", "gps", "place"]),
+      label: z.string(),
+      lat: z.number(),
+      lon: z.number(),
+      placeId: z.string().optional(),
+    })
+    .optional(),
 });
 
 export async function POST(req: Request) {
@@ -44,10 +59,17 @@ export async function POST(req: Request) {
       days: body.days,
       hoursPerDay: body.hoursPerDay,
       interests: body.interests as never,
+      strictCategories: body.strictCategories,
+      selectedPlaceIds: body.selectedPlaceIds,
+      lockedPlaceIds: body.lockedPlaceIds,
+      excludedPlaceIds: body.excludedPlaceIds,
       budget: body.budget,
       vibe: body.vibe,
       sunsetMin,
       radiusKm,
+      transportMode: body.transportMode,
+      timeMode: body.timeMode,
+      startAnchor: body.startAnchor,
     });
     await saveTrip(plan);
     return NextResponse.json({ plan });

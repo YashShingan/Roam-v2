@@ -9,7 +9,8 @@ import { kvGet, kvSet, loadPlacesForCity } from "./db";
 import { isVisitablePlace } from "./pipeline";
 import { getCollectorHealth } from "./collectors";
 import { getCollectState, isCollectFresh, startCollect, type CollectState } from "./collect-manager";
-import type { Experience, CollectorHealth } from "./types";
+import { parsePriceSnippets, aggregatePriceHint } from "./price-engine";
+import type { Experience, CollectorHealth, PriceSample } from "./types";
 import type { GeoCtx } from "./rawhit";
 
 export interface CollectInfo {
@@ -158,11 +159,39 @@ export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}
   const FENCE_KM = radius + 4;
   const inFence = (p: Experience): boolean =>
     p.lat === undefined || p.lon === undefined || haversineKm(geo.lat, geo.lon, p.lat, p.lon) <= FENCE_KM;
+  const normalizePrice = (p: Experience): Experience => {
+    if (p.priceHint) return p;
+    const samples: PriceSample[] = [];
+    if (p.description) {
+      samples.push(...parsePriceSnippets(p.description, "description", undefined, p.category));
+    }
+    for (const q of p.community?.quotes ?? []) {
+      if (q.text) samples.push(...parsePriceSnippets(q.text, "community_quote", q.permalink, p.category));
+    }
+    const hint = aggregatePriceHint(samples, p.category);
+    if (hint) {
+      return {
+        ...p,
+        priceHint: hint,
+        pricePerPerson: Math.round(hint.per_person ?? hint.min),
+        priceIsEstimate: false,
+      };
+    }
+    if (p.priceIsEstimate) {
+      return {
+        ...p,
+        priceHint: null,
+        pricePerPerson: undefined,
+      };
+    }
+    return p;
+  };
+
   const loadStored = async (): Promise<Experience[]> =>
     dedupeStored(
-      [...(await loadPlacesForCity(cityKey, 5000)), ...(await loadPlacesForCity(city.toLowerCase(), 5000))].filter(
-        (p) => inFence(p) && isVisitablePlace(p.name, geo.city),
-      ),
+      [...(await loadPlacesForCity(cityKey, 5000)), ...(await loadPlacesForCity(city.toLowerCase(), 5000))]
+        .filter((p) => inFence(p) && isVisitablePlace(p.name, geo.city))
+        .map(normalizePrice),
     );
 
   // ── render-first: serve stored rows immediately ──────────────────────────

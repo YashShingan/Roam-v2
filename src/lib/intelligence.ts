@@ -28,7 +28,9 @@ const SEQUENCE_NOISE_RE =
   /(?:[-_\s]+\d{1,3}|\s*\(\d{1,3}\)|\s+#\d{1,3})$/;
 
 const GEOGRAPHIC_SUFFIX_CLEAN_RE =
-  /[-_\s]+(?:bangalore|bengaluru|mumbai|pune|delhi|india|karnataka|maharashtra)[-\w\s]*$/i;
+  /[-_]+(?:bangalore|bengaluru|mumbai|pune|delhi|india|karnataka|maharashtra)[-\w\s]*$/i;
+
+const SMALL_WORDS = new Set(["of", "in", "on", "at", "to", "for", "and", "the", "by"]);
 
 /**
  * Normalizes a mined name (especially from Wikimedia Commons or photo sources)
@@ -42,6 +44,8 @@ export function extractCanonicalLandmark(rawTitle: string): string {
   let name = rawTitle.replace(/^File:/i, "").trim();
   // Strip image file extensions
   name = name.replace(/\.(?:jpe?g|png|webp|tiff?|gif|svg)$/i, "").trim();
+  // Strip geo suffix tails before replacing underscores/hyphens: "Cubbon_park-1-bangalore-India" -> "Cubbon_park"
+  name = name.replace(GEOGRAPHIC_SUFFIX_CLEAN_RE, "");
   // Replace underscores and clean separator spacing
   name = name.replace(/_/g, " ").replace(/\s+/g, " ");
 
@@ -54,20 +58,20 @@ export function extractCanonicalLandmark(rawTitle: string): string {
   // Strip photo conditions: "Vidhana Soudha in night 3" -> "Vidhana Soudha"
   name = name.replace(PHOTO_SUFFIX_RE, "");
 
-  // Strip geo suffix tails: "Cubbon park-1-bangalore-India" -> "Cubbon park"
-  name = name.replace(GEOGRAPHIC_SUFFIX_CLEAN_RE, "");
-
   // Strip trailing sequence numbers: "Vikas Soudha 1" -> "Vikas Soudha", " 01" -> ""
   name = name.replace(SEQUENCE_NOISE_RE, "");
 
   // Standardize common Indian landmark variations (e.g. Vidhan -> Vidhana)
   name = name.replace(/\bVidhan\s+Soudha\b/i, "Vidhana Soudha");
 
-  // Title-case words: "Cubbon park" -> "Cubbon Park"
+  // Title-case words while keeping internal prepositions ("of", "in") lowercase
   name = name
     .split(/\s+/)
     .filter(Boolean)
-    .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w))
+    .map((w, idx) => {
+      if (idx > 0 && SMALL_WORDS.has(w.toLowerCase())) return w.toLowerCase();
+      return w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w;
+    })
     .join(" ");
 
   return name.trim();

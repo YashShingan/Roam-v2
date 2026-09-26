@@ -116,3 +116,208 @@ describe("isBareGeoFragment / stripPossessive (mined-junk gate)", () => {
     expect(stripPossessive("Nando's")).toBe("Nando");
   });
 });
+
+import { parsePriceSnippets, aggregatePriceHint, deriveStopPriceInfo } from "@/lib/price-engine";
+import {
+  buildTripPlan,
+  optimizeDayRoute,
+  recomputePlanMetrics,
+  buildMultiStopGmapsUrl,
+  durationMinutesFromKm,
+} from "@/lib/planner";
+import type { Experience } from "@/lib/types";
+
+function makeExp(overrides: Partial<Experience> & { id: string; name: string; category: Experience["category"] }): Experience {
+  return {
+    source: "test",
+    sources: [{ source: "test" }],
+    address: "Pune",
+    popularity: "Popular",
+    popularityScore: 0.7,
+    community: { mentions: 5, upvotes: 10, sentiment: 0.5, quotes: [] },
+    durationMinutes: 60,
+    bookingRequired: false,
+    tags: [],
+    amenities: [],
+    ...overrides,
+  };
+}
+
+describe("Price Intelligence Engine (TS)", () => {
+  it("extracts free entry and meal ranges with 'for two' division", () => {
+    const freeSamples = parsePriceSnippets("Entry is free of charge for everyone.", "wiki", undefined, "culture");
+    const freeHint = aggregatePriceHint(freeSamples, "culture");
+    expect(freeHint?.min).toBe(0);
+    expect(freeHint?.max).toBe(0);
+    expect(deriveStopPriceInfo({ priceHint: freeHint }).priceBasis).toBe("Free entry");
+
+    const mealSamples = parsePriceSnippets("Authentic thali! Cost for two is ₹400–600.", "reddit", undefined, "food");
+    const mealHint = aggregatePriceHint(mealSamples, "food");
+    expect(mealHint?.min).toBe(200);
+    expect(mealHint?.max).toBe(300);
+    expect(mealHint?.mode).toBe("meal");
+  });
+
+  it("returns honest Varies state when no price signal exists (no fake category fallback)", () => {
+    const info = deriveStopPriceInfo({ priceHint: null, pricePerPerson: undefined, priceIsEstimate: true });
+    expect(info.priceBasis).toBe("Varies — no reliable signal");
+    expect(info.priceMin).toBeUndefined();
+  });
+});
+
+describe("Trip Planner Route Optimization & Strict Category Selection", () => {
+  const samplePlaces: Experience[] = [
+    makeExp({
+      id: "c1",
+      name: "Shaniwar Wada",
+      category: "culture",
+      lat: 18.5195,
+      lon: 73.8553,
+      priceHint: { mode: "entry", min: 25, max: 25, per_person: 25, samples: [], confidence: 0.8 },
+    }),
+    makeExp({
+      id: "f1",
+      name: "Vaishali Restaurant",
+      category: "food",
+      lat: 18.5222,
+      lon: 73.8415,
+      priceHint: { mode: "meal", min: 200, max: 350, per_person: 250, samples: [], confidence: 0.85 },
+    }),
+    makeExp({
+      id: "c2",
+      name: "Aga Khan Palace",
+      category: "culture",
+      lat: 18.5525,
+      lon: 73.9015,
+      priceHint: { mode: "entry", min: 50, max: 50, per_person: 50, samples: [], confidence: 0.8 },
+    }),
+    makeExp({
+      id: "c3",
+      name: "Lal Mahal",
+      category: "culture",
+      lat: 18.5186,
+      lon: 73.8565,
+      priceHint: null,
+      priceIsEstimate: true,
+    }),
+  ];
+
+  it("strictly filters to cultural places only when interests=['culture'] (never injecting food)", async () => {
+    const plan = await buildTripPlan(samplePlaces, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      lat: 18.52,
+      lon: 73.855,
+      days: 1,
+      hoursPerDay: 8,
+      interests: ["culture"],
+      strictCategories: true,
+      timeMode: "recommended",
+    });
+
+    const stops = plan.days[0].stops;
+    expect(stops.length).toBe(3);
+    expect(stops.every((s) => s.category === "culture")).toBe(true);
+    expect(stops.some((s) => s.category === "food")).toBe(false);
+    // Check price band (c1: 25, c2: 50, c3: unpriced)
+    expect(plan.budgetBand?.min).toBe(75);
+    expect(plan.budgetBand?.max).toBe(75);
+    expect(plan.budgetBand?.pricedCount).toBe(2);
+    expect(plan.budgetBand?.unpricedCount).toBe(1);
+  });
+
+  it("orders stops geographically from startAnchor via 2-opt without cross-city backtracking", () => {
+    // Anchor right next to Shaniwar Wada (18.5195, 73.8553); Lal Mahal is 150m away (18.5186, 73.8565), Aga Khan is 6km away (18.5525, 73.9015)
+    // Even if Aga Khan is placed in the middle of the input list, optimizeDayRoute puts Shaniwar Wada -> Lal Mahal -> Aga Khan Palace
+    const zigzag = [
+      { exp: samplePlaces[0], score: 0.9, fit: 1 }, // Shaniwar Wada
+      { exp: samplePlaces[2], score: 0.85, fit: 1 }, // Aga Khan Palace (far)
+      { exp: samplePlaces[3], score: 0.8, fit: 1 }, // Lal Mahal (right next to Shaniwar Wada)
+    ];
+    const optimized = optimizeDayRoute(zigzag, { lat: 18.5195, lon: 73.8553, placeId: "c1" });
+    expect(optimized.map((x) => x.exp.id)).toEqual(["c1", "c3", "c2"]);
+  });
+
+  it("recomputes slots, totalHours, and budgetBand when inline durations change or stops are removed", async () => {
+    const plan = await buildTripPlan(samplePlaces, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      lat: 18.52,
+      lon: 73.855,
+      days: 1,
+      hoursPerDay: 8,
+      selectedPlaceIds: ["c1", "f1"],
+      timeMode: "recommended",
+    });
+
+    expect(plan.days[0].stops.length).toBe(2);
+    expect(plan.budgetBand?.min).toBe(225); // 25 + 200
+    expect(plan.budgetBand?.max).toBe(375); // 25 + 350
+
+    // Edit stop 0 duration from 60 to 120 min and remove stop 1
+    plan.days[0].stops[0].durationMinutes = 120;
+    plan.days[0].stops.splice(1, 1);
+    const updated = recomputePlanMetrics(plan, { reslot: true });
+    expect(updated.days[0].stops.length).toBe(1);
+    expect(updated.budgetBand?.min).toBe(25);
+    expect(updated.budgetBand?.max).toBe(25);
+    expect(updated.days[0].totalHours).toBeGreaterThanOrEqual(2);
+
+    const gmapsUrl = buildMultiStopGmapsUrl(plan.days[0].stops, plan.startAnchor, "walk");
+    expect(gmapsUrl).toContain("https://www.google.com/maps/dir/?api=1");
+    expect(gmapsUrl).toContain("travelmode=walking");
+  });
+
+  it("calculates distinct realistic travel times for Walk (4.8 km/h) vs Drive (24 km/h + 1m)", async () => {
+    // 2.63 km leg from the user's screenshot: Walk should be 33m, Drive should be 8m
+    expect(durationMinutesFromKm(2.63, "walk")).toBe(33);
+    expect(durationMinutesFromKm(2.63, "drive")).toBe(8);
+
+    const walkPlan = await buildTripPlan(samplePlaces, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      lat: 18.52,
+      lon: 73.855,
+      days: 1,
+      hoursPerDay: 8,
+      selectedPlaceIds: ["c1", "c2"],
+      transportMode: "walk",
+      timeMode: "recommended",
+    });
+
+    const walkMinutes = walkPlan.days[0].stops[1].travelMinFromPrev;
+
+    const drivePlan = structuredClone(walkPlan);
+    drivePlan.transportMode = "drive";
+    const recomputedDrive = recomputePlanMetrics(drivePlan, {
+      reslot: true,
+      recalcTravelFromMode: true,
+    });
+    const driveMinutes = recomputedDrive.days[0].stops[1].travelMinFromPrev;
+
+    expect(walkMinutes).toBeGreaterThan(driveMinutes * 2);
+    expect(recomputedDrive.days[0].stops[1].note).toContain("drive");
+  });
+
+  it("honors lockedPlaceIds (👍 Keep) and excludedPlaceIds (👎 Swap) on Re-plan", async () => {
+    const plan = await buildTripPlan(samplePlaces, {
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      lat: 18.52,
+      lon: 73.855,
+      days: 1,
+      hoursPerDay: 8,
+      lockedPlaceIds: ["c3"],
+      excludedPlaceIds: ["c1"],
+      timeMode: "recommended",
+    });
+
+    const stopIds = plan.days[0].stops.map((s) => s.experienceId);
+    expect(stopIds).toContain("c3");
+    expect(stopIds).not.toContain("c1");
+    const lockedStop = plan.days[0].stops.find((s) => s.experienceId === "c3");
+    expect(lockedStop?.locked).toBe(true);
+  });
+});
+
+

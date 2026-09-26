@@ -34,11 +34,20 @@ export async function GET(req: Request) {
       if (res.ok && legs && legs.length === pts.length - 1) {
         return NextResponse.json({
           engine: "OSRM",
-          legs: legs.map((l) => ({
-            minutes: Math.max(1, Math.round(l.duration / (mode === "foot" ? 60 : 60))),
-            km: Number((l.distance / 1000).toFixed(2)),
-            geometry: (l.geometry?.coordinates ?? []).map(([lon, lat]) => [lat, lon] as [number, number]),
-          })),
+          legs: legs.map((l) => {
+            const km = Number((l.distance / 1000).toFixed(2));
+            const minutes =
+              km < 0.03
+                ? 0
+                : mode === "driving"
+                  ? Math.max(2, Math.round((km / 24) * 60 + 1))
+                  : Math.max(1, Math.round((km / 4.8) * 60));
+            return {
+              minutes,
+              km,
+              geometry: (l.geometry?.coordinates ?? []).map(([lon, lat]) => [lat, lon] as [number, number]),
+            };
+          }),
         });
       }
       throw new Error(`OSRM code ${j.code ?? res.status}`);

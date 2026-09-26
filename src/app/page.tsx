@@ -14,9 +14,11 @@ import { CityDialog, DEFAULT_FILTERS, FilterBar } from "@/components/filters";
 import { Hero } from "@/components/hero";
 import { DetailDialog } from "@/components/detail";
 import { PulseView } from "@/components/pulse";
-import { PlanSheet } from "@/components/plan";
+import { PlanSheet, type ReplanOptions } from "@/components/plan";
 import { CompareSheet, CompareTray } from "@/components/compare";
 import { VoicePanel } from "@/components/voice";
+import { recomputePlanMetrics } from "@/lib/planner";
+import { deriveStopPriceInfo } from "@/lib/price-engine";
 import {
   Attribution,
   HealthDrawer,
@@ -211,21 +213,47 @@ export default function Home() {
   );
 
   const replan = useCallback(
-    async (req: { days: number; hoursPerDay: number; interests?: Category[]; budget?: number; vibe?: string }) => {
-      toast.message(`Planning ${req.days} day${req.days > 1 ? "s" : ""} in ${city}…`);
+    async (
+      req: ReplanOptions & { budget?: number },
+    ) => {
+      const effectiveInterests =
+        req.interests !== undefined
+          ? req.interests
+          : filters.categories.length > 0
+            ? filters.categories
+            : undefined;
+      const effectiveBudget = req.budget !== undefined ? req.budget : (filters.budget ?? undefined);
+      toast.message(
+        `Planning ${req.days} day${req.days > 1 ? "s" : ""} route in ${city}${
+          effectiveInterests?.length ? ` (${effectiveInterests.join(", ")})` : ""
+        }…`,
+      );
       try {
         const res = await fetch("/api/trip/plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ city, days: req.days, hoursPerDay: req.hoursPerDay, interests: req.interests, budget: req.budget, vibe: req.vibe }),
+          body: JSON.stringify({
+            city,
+            days: req.days,
+            hoursPerDay: req.hoursPerDay,
+            interests: effectiveInterests,
+            strictCategories: req.strictCategories ?? true,
+            selectedPlaceIds: req.selectedPlaceIds,
+            lockedPlaceIds: req.lockedPlaceIds,
+            excludedPlaceIds: req.excludedPlaceIds,
+            budget: effectiveBudget,
+            vibe: req.vibe,
+            transportMode: req.transportMode,
+            timeMode: req.timeMode,
+            startAnchor: req.startAnchor,
+          }),
         });
         const j = (await res.json()) as { plan?: TripPlan; error?: string };
         if (!res.ok || !j.plan) throw new Error(j.error ?? "planning failed");
         setPlan(j.plan);
         setPlanOpen(true);
-        toast.success(`Plan ready — ${j.plan.days.reduce((a, d) => a + d.stops.length, 0)} stops`);
+        toast.success(`Route ready — ${j.plan.days.reduce((a, d) => a + d.stops.length, 0)} stops`);
         if ("speechSynthesis" in window && j.plan.voiceSummary) {
-          // narrate briefly; the full read-aloud lives in the plan sheet
           const u = new SpeechSynthesisUtterance(j.plan.voiceSummary.slice(0, 320));
           u.lang = "en-IN";
           speechSynthesis.cancel();
@@ -235,7 +263,7 @@ export default function Home() {
         toast.error(e instanceof Error ? e.message : "Planning failed");
       }
     },
-    [city, setPlan],
+    [city, setPlan, filters.categories, filters.budget],
   );
 
   const applyStopMutation = (a: Action): void => {
@@ -247,29 +275,37 @@ export default function Home() {
         return;
       }
       if (!current) {
-        toast.message("Say “plan a day in {city}” first — then I can add stops.");
+        void replan({
+          days: 1,
+          hoursPerDay: 8,
+          selectedPlaceIds: [target.id],
+          timeMode: "recommended",
+        });
         return;
       }
       const next: TripPlan = structuredClone(current);
-      const last = next.days[0].stops[next.days[0].stops.length - 1];
-      const [h, m] = (last?.slotEnd ?? "09:00").split(":").map(Number);
-      const start = h * 60 + m + 15;
-      const fmt = (min: number): string => `${String(Math.floor((min % 1440) / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+      const priceInfo = deriveStopPriceInfo(target);
       next.days[0].stops.push({
         experienceId: target.id,
         name: target.name,
         category: target.category,
-        slotStart: fmt(start),
-        slotEnd: fmt(start + target.durationMinutes),
-        travelMinFromPrev: 0,
+        slotStart: "09:00",
+        slotEnd: "10:00",
+        travelMinFromPrev: 10,
         lat: target.lat,
         lon: target.lon,
         durationMinutes: target.durationMinutes,
-        pricePerPerson: target.pricePerPerson,
-        note: "Added by voice",
+        pricePerPerson: priceInfo.pricePerPerson,
+        priceBasis: priceInfo.priceBasis,
+        priceMin: priceInfo.priceMin,
+        priceMax: priceInfo.priceMax,
+        priceQuote: priceInfo.priceQuote,
+        imageUrl: target.imageUrl,
+        note: "Added to route",
       });
-      setPlan(next);
-      toast.success(`${target.name} added to Day 1`);
+      setPlan(recomputePlanMetrics(next, { reslot: true }));
+      setPlanOpen(true);
+      toast.success(`${target.name} added to Day 1 route`);
     }
     if (a.type === "remove_stop" && current) {
       const next: TripPlan = structuredClone(current);
@@ -283,7 +319,7 @@ export default function Home() {
         }
       }
       if (removed) {
-        setPlan(next);
+        setPlan(recomputePlanMetrics(next, { reslot: true }));
         toast.success(`Removed ${a.name}`);
       } else toast.message(`“${a.name}” isn't in the plan.`);
     }
@@ -293,8 +329,8 @@ export default function Home() {
       const [moved] = stops.splice(Math.min(a.from, stops.length - 1), 1);
       if (moved) {
         stops.splice(Math.min(a.to, stops.length), 0, moved);
-        setPlan(next);
-        toast.success("Reordered");
+        setPlan(recomputePlanMetrics(next, { reslot: true }));
+        toast.success("Route reordered");
       }
     }
   };
@@ -534,6 +570,8 @@ export default function Home() {
               selectedId={detail?.id ?? null}
               onSelect={(e) => setDetail(e)}
               planStops={plan?.days.flatMap((d) => d.stops) ?? []}
+              startAnchor={plan?.startAnchor ?? null}
+              fitRouteBounds={!!plan}
               savedIds={saved}
             />
           )}
@@ -553,7 +591,22 @@ export default function Home() {
 
       {/* floating dock */}
       <div className="clay-dock fixed bottom-3 sm:bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-1 sm:py-1.5 no-print safe-bottom">
-        <Button variant="primary" onClick={() => (plan ? setPlanOpen(true) : void replan({ days: 1, hoursPerDay: 8 }))} aria-label="Day plan">
+        <Button
+          variant="primary"
+          onClick={() =>
+            plan
+              ? setPlanOpen(true)
+              : void replan({
+                  days: 1,
+                  hoursPerDay: 8,
+                  interests: filters.categories.length > 0 ? filters.categories : undefined,
+                  strictCategories: true,
+                  selectedPlaceIds: saved.length > 0 ? saved : undefined,
+                  timeMode: "recommended",
+                })
+          }
+          aria-label="Day plan"
+        >
           <CalendarDays size={15} />
           {plan ? "My plan" : "Plan my day"}
           {stopsCount > 0 && <span className="rounded-full bg-black/20 px-1.5 text-[11px] font-bold">{stopsCount}</span>}
@@ -583,7 +636,18 @@ export default function Home() {
           setDetail(null);
         }}
       />
-      <PlanSheet open={planOpen} onClose={() => setPlanOpen(false)} onReplan={(req) => void replan(req)} onOpenPlace={(e) => setDetail(e)} />
+      <PlanSheet
+        open={planOpen}
+        onClose={() => setPlanOpen(false)}
+        onReplan={(req) => void replan(req)}
+        onOpenPlace={(e) => setDetail(e)}
+        onViewOnMap={() => setView("map")}
+        places={places}
+        activeCategories={filters.categories}
+        cityCenter={
+          placesQuery.data ? { lat: placesQuery.data.lat, lon: placesQuery.data.lon } : undefined
+        }
+      />
       <CompareSheet open={compareOpen} onClose={() => setCompareOpen(false)} places={places} onOpenPlace={(e) => setDetail(e)} />
       <CompareTray places={places} onOpen={() => setCompareOpen(true)} />
       <VoicePanel

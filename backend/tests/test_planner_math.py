@@ -1,7 +1,6 @@
 # ─── Tests for Planner Price Math & Reordering ──────────────────────────────
 from __future__ import annotations
 
-import pytest
 from models import Experience, Category, ItineraryStop, TripDay, TripPlan, Feasibility
 from services.price_engine import PriceHint, PriceSample
 
@@ -93,3 +92,36 @@ def test_planner_all_unpriced():
     assert len(priced_stops) == 0
     min_sum = sum(s.priceMin for s in priced_stops)
     assert min_sum == 0
+
+
+def test_plan_trip_with_budget_and_strict_category():
+    from planner import plan_trip
+
+    p_cult_1 = create_mock_place("c1", "Durgadi Fort", 0.0, 0.0, "entry")
+    p_cult_1.category = Category.culture
+    p_cult_1.lat, p_cult_1.lon = 19.243, 73.120
+
+    p_cult_2 = create_mock_place("c2", "Shiv Mandir", 50.0, 50.0, "entry")
+    p_cult_2.category = Category.culture
+    p_cult_2.lat, p_cult_2.lon = 19.246, 73.125
+
+    p_food = create_mock_place("f1", "Misal House", 150.0, 200.0, "meal")
+    p_food.category = Category.food
+    p_food.lat, p_food.lon = 19.250, 73.130
+
+    plan = plan_trip(
+        places=[p_cult_1, p_cult_2, p_food],
+        city="Kalyan",
+        city_label="Kalyan, Maharashtra",
+        lat=19.243,
+        lon=73.120,
+        days=1,
+        hours_per_day=8,
+        interests=["culture"],
+        budget=500,
+    )
+    assert len(plan.days[0].stops) == 2
+    assert all(s.category == Category.culture for s in plan.days[0].stops)
+    assert plan.feasibility.ok is True
+    assert "Fits budget" in plan.feasibility.message
+

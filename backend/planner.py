@@ -49,6 +49,13 @@ def plan_trip(
 ) -> TripPlan:
     """Deterministic + explainable trip planner."""
 
+    # Strict category filter when interests are explicitly selected
+    if interests:
+        interest_set = {c.lower() for c in interests}
+        filtered_by_cat = [p for p in places if p.category.value.lower() in interest_set]
+        if filtered_by_cat:
+            places = filtered_by_cat
+
     # Score and rank
     scored = sorted(
         places,
@@ -56,21 +63,25 @@ def plan_trip(
         reverse=True,
     )
 
-    # Budget filter
+    # Budget filter (keep unpriced places or places within budget)
     if budget:
-        scored = [p for p in scored if (p.pricePerPerson or 0) <= budget]
+        scored = [
+            p for p in scored
+            if (p.priceHint.min if p.priceHint else p.pricePerPerson) is None
+            or (p.priceHint.min if p.priceHint else (p.pricePerPerson or 0)) <= budget
+        ]
 
     # Vibe filter
-    if vibe == "foodie":
+    if vibe == "foodie" and not interests:
         food_places = [p for p in scored if p.category.value == "food"]
         others = [p for p in scored if p.category.value != "food"]
         scored = food_places + others
-    elif vibe == "heritage":
+    elif vibe == "heritage" and not interests:
         culture_places = [p for p in scored if p.category.value == "culture"]
         others = [p for p in scored if p.category.value != "culture"]
         scored = culture_places + others
 
-    # Build days
+    # Build days with Nearest-Neighbor geographic ordering from (lat, lon)
     budget_minutes = int(hours_per_day * 60)
     trip_days: list[TripDay] = []
     used = set()
@@ -81,48 +92,43 @@ def plan_trip(
         day_minutes = 0
         current_time = 9 * 60  # Start 9:00 AM
         last_place: Experience | None = None
+        cur_lat, cur_lon = lat, lon
         day_walk_km = 0.0
 
-        # Meal anchoring times
-        meal_times = [9 * 60, 13 * 60 + 30, 20 * 60]  # 9:00, 13:30, 20:00
-        food_placed = set()
+        # Candidate pool for this day (top remaining scored candidates, ordered by proximity to current position)
+        remaining = [p for p in scored if p.id not in used]
+        while remaining and day_minutes < budget_minutes and len(stops) < 8:
+            # Pick candidate balancing score and proximity to current anchor
+            def nn_key(cand: Experience) -> float:
+                base_s = score_experience(cand, interests, lat, lon)
+                if cand.lat is not None and cand.lon is not None:
+                    d_km = haversine_km(cur_lat, cur_lon, cand.lat, cand.lon)
+                else:
+                    d_km = 5.0
+                return base_s - 0.04 * d_km
 
-        for place in scored:
-            if place.id in used:
-                continue
-            if day_minutes >= budget_minutes:
-                break
+            best_cand = max(remaining, key=nn_key)
+            remaining.remove(best_cand)
+            place = best_cand
 
-            # Calculate travel time
-            travel = travel_time_min(last_place, place) if last_place else 0
+            travel = travel_time_min(last_place, place) if last_place else (
+                max(3, round((haversine_km(lat, lon, place.lat, place.lon) * 1.4 / 4.5) * 60))
+                if place.lat and place.lon else 0
+            )
             total_needed = travel + place.durationMinutes
 
-            if day_minutes + total_needed > budget_minutes + 30:
+            if day_minutes + total_needed > budget_minutes + 30 and len(stops) >= 2:
                 continue
-
-            # Meal anchoring: prefer food places near meal times
-            is_food = place.category.value == "food"
-            near_meal = any(
-                abs(current_time - mt) < 60 and mt not in food_placed
-                for mt in meal_times
-            )
-            if is_food and not near_meal and len(stops) > 0:
-                # Skip food if not near a meal slot (unless we're short on options)
-                if len([p for p in scored if p.id not in used and p.category.value != "food"]) > 3:
-                    continue
 
             current_time += travel
             slot_start = fmt_time(current_time)
             current_time += place.durationMinutes
             slot_end = fmt_time(current_time)
 
-            if is_food:
-                for mt in meal_times:
-                    if abs(int(slot_start.split(":")[0]) * 60 + int(slot_start.split(":")[1]) - mt) < 60:
-                        food_placed.add(mt)
-
             if last_place and place.lat and last_place.lat:
-                day_walk_km += haversine_km(last_place.lat, last_place.lon or 0, place.lat, place.lon or 0)
+                day_walk_km += haversine_km(last_place.lat, last_place.lon or 0, place.lat, place.lon or 0) * 1.4
+            elif not last_place and place.lat:
+                day_walk_km += haversine_km(lat, lon, place.lat, place.lon or 0) * 1.4
 
             # Price basis calculation
             price_basis = "Varies — no reliable signal"
@@ -133,7 +139,9 @@ def plan_trip(
                 mode = place.priceHint.mode
                 price_min = place.priceHint.min
                 price_max = place.priceHint.max
-                if mode == "entry":
+                if price_min == 0 and price_max == 0:
+                    price_basis = "Free entry"
+                elif mode == "entry":
                     price_basis = f"entry ₹{int(price_min)}" if price_min == price_max else f"entry ₹{int(price_min)}–{int(price_max)}"
                 elif mode == "meal":
                     price_basis = f"meal ~₹{int(place.priceHint.per_person or price_min)} pp"
@@ -143,8 +151,11 @@ def plan_trip(
                     price_basis = f"~₹{int(place.priceHint.per_person or price_min)}"
                 if place.priceHint.samples:
                     price_quote = place.priceHint.samples[0].raw_snippet
-            elif place.pricePerPerson:
-                price_basis = f"est. ₹{place.pricePerPerson}"
+            elif place.pricePerPerson is not None and not getattr(place, "priceIsEstimate", False):
+                if place.pricePerPerson == 0:
+                    price_basis = "Free entry"
+                else:
+                    price_basis = f"est. ₹{place.pricePerPerson}"
                 price_min = float(place.pricePerPerson)
                 price_max = float(place.pricePerPerson)
 
@@ -166,9 +177,11 @@ def plan_trip(
             ))
 
             day_minutes += total_needed
-            total_budget += place.pricePerPerson or 0
+            total_budget += int(price_min or 0)
             used.add(place.id)
             last_place = place
+            if place.lat is not None and place.lon is not None:
+                cur_lat, cur_lon = place.lat, place.lon
 
         total_hours = round(day_minutes / 60, 1)
         trip_days.append(TripDay(
@@ -204,8 +217,8 @@ def plan_trip(
 
     # Feasibility check
     feasibility_msg = ""
-    if budget_per_day:
-        target_budget = budget_per_day * days
+    if budget:
+        target_budget = budget * days
         if min_sum <= target_budget:
             feasibility_msg = f"Fits budget ₹{target_budget:,} with min-sum ₹{min_sum:,}"
         else:
@@ -217,7 +230,7 @@ def plan_trip(
         feasibility_msg = f"{total_stops} stops · prices vary — no reliable signal"
 
     feasible = Feasibility(
-        ok=total_stops >= days * 2,
+        ok=total_stops >= 1 and (not budget or min_sum <= budget * days),
         message=feasibility_msg,
     )
 

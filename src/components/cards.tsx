@@ -25,7 +25,10 @@ export function applyFilters(
   let out = places.filter((p) => {
     if (q && !`${p.name} ${p.description ?? ""} ${p.tags.join(" ")} ${p.address}`.toLowerCase().includes(q)) return false;
     if (f.categories.length && !f.categories.includes(p.category)) return false;
-    if (f.budget !== null && (p.pricePerPerson ?? 0) > f.budget) return false;
+    if (f.budget !== null) {
+      const effPrice = p.priceHint?.min ?? (p.priceIsEstimate ? undefined : p.pricePerPerson);
+      if (effPrice !== undefined && effPrice > f.budget) return false;
+    }
     if (f.duration === "short" && p.durationMinutes >= 60) return false;
     if (f.duration === "half" && (p.durationMinutes < 60 || p.durationMinutes > 180)) return false;
     if (f.duration === "long" && p.durationMinutes < 180) return false;
