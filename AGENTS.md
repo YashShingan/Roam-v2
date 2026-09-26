@@ -38,5 +38,8 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - In multi-day trips, meal anchors must be distributed to each active day (breakfast ~8:30–9:30 AM, lunch ~12:30–2:00 PM, dinner ~7:30–9:00 PM) rather than clustered by angle into a single day, ensuring sights are not scheduled during lunch.
 10. **Adaptive Planner Workspace (`src/components/ui.tsx`, `src/components/plan.tsx`)**:
    - Day planner modal must support toggling between a compact side drawer and a maximized 2-column cockpit (Interactive Route Map + stats on left, scrollable itinerary timeline on right).
+11. **Voice Assistant & Speech Recognition Architecture Guardrails (`src/components/voice.tsx`, `src/app/api/assistant/route.ts`)**:
+   - Never undertake intrusive architectural rewrites on working media hardware loops (`webkitSpeechRecognition`, `MediaRecorder`, Web Audio VAD). Chromium mic locking, lifecycle pauses, and tab permissions are sensitive to abstraction churn.
+   - Keep conversational NLU prompts natural and multi-turn capable; do not constrain incoming conversational queries into rigid zero-shot schemas that fail server-side validation.
 
 
