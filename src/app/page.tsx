@@ -305,8 +305,12 @@ export default function Home() {
         return;
       }
       const next: TripPlan = structuredClone(current);
+      const targetDayIdx =
+        a.day !== undefined ? Math.min(Math.max(a.day - 1, 0), next.days.length - 1) : 0;
+      const targetStops = next.days[targetDayIdx].stops;
+
       const priceInfo = deriveStopPriceInfo(target);
-      next.days[0].stops.push({
+      const newStop: (typeof targetStops)[number] = {
         experienceId: target.id,
         name: target.name,
         category: target.category,
@@ -323,26 +327,203 @@ export default function Home() {
         priceQuote: priceInfo.priceQuote,
         imageUrl: target.imageUrl,
         note: "Added to route",
-      });
+      };
+
+      let insertIdx = targetStops.length;
+      if (a.slot === "morning") {
+        const hasBreakfast =
+          targetStops[0]?.category === "food" || /breakfast/i.test(targetStops[0]?.note || "");
+        insertIdx = hasBreakfast && targetStops.length > 1 ? 1 : 0;
+      } else if (a.slot === "afternoon") {
+        const lunchIdx = targetStops.findIndex(
+          (s) => s.category === "food" || /lunch/i.test(s.note || ""),
+        );
+        insertIdx = lunchIdx >= 0 ? lunchIdx + 1 : Math.max(0, Math.floor(targetStops.length / 2));
+      } else if (a.slot === "evening") {
+        const dinnerIdx = targetStops.findIndex((s) => /dinner/i.test(s.note || ""));
+        insertIdx = dinnerIdx >= 0 ? dinnerIdx : targetStops.length;
+      }
+
+      targetStops.splice(insertIdx, 0, newStop);
       setPlan(recomputePlanMetrics(next, { reslot: true }));
       setPlanOpen(true);
-      toast.success(`${target.name} added to Day 1 route`);
+      const slotDesc = a.slot ? ` (${a.slot})` : "";
+      toast.success(`${target.name} added to Day ${targetDayIdx + 1} route${slotDesc}`);
     }
-    if (a.type === "remove_stop" && current) {
+    if (a.type === "move_stop" && current) {
       const next: TripPlan = structuredClone(current);
-      let removed = false;
-      for (const d of next.days) {
-        const idx = d.stops.findIndex((s) => s.name.toLowerCase().includes(a.name.toLowerCase()));
-        if (idx >= 0) {
-          d.stops.splice(idx, 1);
-          removed = true;
+      const query = a.name.toLowerCase().trim();
+      let movedStop: (typeof next.days)[number]["stops"][number] | null = null;
+      let fromDayIdx = -1;
+
+      const searchDayIndices =
+        a.fromDay !== undefined && a.fromDay >= 1 && a.fromDay <= next.days.length
+          ? [a.fromDay - 1]
+          : next.days.map((_, i) => i);
+
+      for (const dIdx of searchDayIndices) {
+        const sIdx = next.days[dIdx].stops.findIndex(
+          (s) => s.name.toLowerCase().includes(query) || query.includes(s.name.toLowerCase()),
+        );
+        if (sIdx >= 0) {
+          [movedStop] = next.days[dIdx].stops.splice(sIdx, 1);
+          fromDayIdx = dIdx;
           break;
         }
       }
-      if (removed) {
+
+      if (!movedStop) {
+        toast.message(`"${a.name}" isn't in your current itinerary.`);
+        return;
+      }
+
+      const targetDayIdx = Math.min(Math.max(a.toDay - 1, 0), 6);
+      while (next.days.length <= targetDayIdx) {
+        next.days.push({ stops: [], totalHours: 0, walkKm: 0 });
+      }
+
+      const targetStops = next.days[targetDayIdx].stops;
+
+      let resolvedSlot = a.slot;
+      if (!resolvedSlot) {
+        const isBfast =
+          movedStop.category === "food" &&
+          (movedStop.timeOfDay === "breakfast" ||
+            (movedStop.slotStart && movedStop.slotStart < "11:30") ||
+            /breakfast|cafe|chai|tea|bakery|coffee|idli|dosa|poha|misal/i.test(movedStop.name));
+        const isLunch =
+          movedStop.timeOfDay === "lunch" ||
+          (movedStop.slotStart && movedStop.slotStart >= "11:30" && movedStop.slotStart < "16:00") ||
+          (movedStop.category === "food" && /thali|biryani|dining|restaurant|kitchen|bhojanalay/i.test(movedStop.name));
+        const isDinner =
+          movedStop.timeOfDay === "dinner" ||
+          (movedStop.slotStart && movedStop.slotStart >= "18:30");
+
+        if (isBfast) resolvedSlot = "morning";
+        else if (isLunch) resolvedSlot = "afternoon";
+        else if (isDinner) resolvedSlot = "evening";
+        else if (movedStop.slotStart && movedStop.slotStart < "12:00") resolvedSlot = "morning";
+        else if (movedStop.slotStart && movedStop.slotStart < "17:00") resolvedSlot = "afternoon";
+      }
+
+      let insertIdx = targetStops.length;
+      if (resolvedSlot === "morning") {
+        const hasBreakfast =
+          targetStops[0]?.category === "food" || /breakfast/i.test(targetStops[0]?.note || "");
+        insertIdx = hasBreakfast && targetStops.length > 1 ? 1 : 0;
+      } else if (resolvedSlot === "afternoon") {
+        const lunchIdx = targetStops.findIndex(
+          (s) => s.category === "food" || /lunch/i.test(s.note || ""),
+        );
+        insertIdx = lunchIdx >= 0 ? lunchIdx + 1 : Math.max(0, Math.floor(targetStops.length / 2));
+      } else if (resolvedSlot === "evening") {
+        const dinnerIdx = targetStops.findIndex((s) => /dinner/i.test(s.note || ""));
+        insertIdx = dinnerIdx >= 0 ? dinnerIdx : targetStops.length;
+      }
+
+      targetStops.splice(insertIdx, 0, movedStop);
+
+      const recomputed = recomputePlanMetrics(next, { reslot: true });
+      setPlan(recomputed);
+      setPlanOpen(true);
+      const slotDesc = resolvedSlot ? ` in the ${resolvedSlot}` : "";
+      toast.success(`Moved "${movedStop.name}" to Day ${targetDayIdx + 1}${slotDesc}`);
+    }
+    if (a.type === "swap_stops" && current) {
+      const next: TripPlan = structuredClone(current);
+      const queryA = a.stopA.toLowerCase().trim();
+      const queryB = a.stopB.toLowerCase().trim();
+
+      let stopAObj: (typeof next.days)[number]["stops"][number] | null = null;
+      let dayAIdx = -1;
+      let stopAIdx = -1;
+
+      let stopBObj: (typeof next.days)[number]["stops"][number] | null = null;
+      let dayBIdx = -1;
+      let stopBIdx = -1;
+
+      const searchIndicesA =
+        a.dayA !== undefined && a.dayA >= 1 && a.dayA <= next.days.length
+          ? [a.dayA - 1]
+          : next.days.map((_, i) => i);
+
+      for (const dIdx of searchIndicesA) {
+        const sIdx = next.days[dIdx].stops.findIndex(
+          (s) => s.name.toLowerCase().includes(queryA) || queryA.includes(s.name.toLowerCase()),
+        );
+        if (sIdx >= 0) {
+          stopAObj = next.days[dIdx].stops[sIdx];
+          dayAIdx = dIdx;
+          stopAIdx = sIdx;
+          break;
+        }
+      }
+
+      const searchIndicesB =
+        a.dayB !== undefined && a.dayB >= 1 && a.dayB <= next.days.length
+          ? [a.dayB - 1]
+          : next.days.map((_, i) => i);
+
+      for (const dIdx of searchIndicesB) {
+        const sIdx = next.days[dIdx].stops.findIndex(
+          (s) =>
+            (s.name.toLowerCase().includes(queryB) || queryB.includes(s.name.toLowerCase())) &&
+            !(dIdx === dayAIdx && sIdx === stopAIdx),
+        );
+        if (sIdx >= 0) {
+          stopBObj = next.days[dIdx].stops[sIdx];
+          dayBIdx = dIdx;
+          stopBIdx = sIdx;
+          break;
+        }
+      }
+
+      if (!stopAObj || !stopBObj || dayAIdx === -1 || dayBIdx === -1) {
+        toast.message(`Couldn't locate both "${a.stopA}" and "${a.stopB}" to swap.`);
+        return;
+      }
+
+      next.days[dayAIdx].stops[stopAIdx] = stopBObj;
+      next.days[dayBIdx].stops[stopBIdx] = stopAObj;
+
+      const recomputed = recomputePlanMetrics(next, { reslot: true });
+      setPlan(recomputed);
+      setPlanOpen(true);
+      toast.success(
+        `Swapped "${stopAObj.name}" (Day ${dayAIdx + 1}) with "${stopBObj.name}" (Day ${dayBIdx + 1})`,
+      );
+    }
+    if (a.type === "remove_stop" && current) {
+      const next: TripPlan = structuredClone(current);
+      let removedStopName: string | null = null;
+      let removedFromDay = -1;
+
+      const searchDayIndices =
+        a.day !== undefined && a.day >= 1 && a.day <= next.days.length
+          ? [a.day - 1]
+          : next.days.map((_, i) => i);
+
+      for (const dIdx of searchDayIndices) {
+        const idx = next.days[dIdx].stops.findIndex(
+          (s) =>
+            s.name.toLowerCase().includes(a.name.toLowerCase()) ||
+            a.name.toLowerCase().includes(s.name.toLowerCase()),
+        );
+        if (idx >= 0) {
+          removedStopName = next.days[dIdx].stops[idx].name;
+          next.days[dIdx].stops.splice(idx, 1);
+          removedFromDay = dIdx + 1;
+          break;
+        }
+      }
+
+      if (removedStopName) {
         setPlan(recomputePlanMetrics(next, { reslot: true }));
-        toast.success(`Removed ${a.name}`);
-      } else toast.message(`“${a.name}” isn't in the plan.`);
+        setPlanOpen(true);
+        toast.success(`Removed "${removedStopName}" from Day ${removedFromDay}`);
+      } else {
+        toast.message(`“${a.name}” isn't in the plan.`);
+      }
     }
     if (a.type === "reorder" && current) {
       const next: TripPlan = structuredClone(current);
@@ -479,6 +660,8 @@ export default function Home() {
           }
           case "add_stop":
           case "remove_stop":
+          case "move_stop":
+          case "swap_stops":
           case "reorder":
             applyStopMutation(a);
             break;
@@ -750,6 +933,7 @@ export default function Home() {
         onOpen={() => setVoiceOpen(true)}
         onClose={() => setVoiceOpen(false)}
         runActions={runActions}
+        dockLeft={planOpen}
         onReadPlan={() => {
           setVoiceOpen(false);
           setPlanOpen(true);

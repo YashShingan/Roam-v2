@@ -1,7 +1,7 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
-import { Ear, Mic, MicOff, Send, Volume2, VolumeX, Zap } from "lucide-react";
+import { AnimatePresence, motion, useDragControls } from "framer-motion";
+import { ArrowLeftRight, Ear, GripHorizontal, Mic, MicOff, Send, Volume2, VolumeX, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { Action } from "@/lib/types";
@@ -44,12 +44,14 @@ export function VoicePanel({
   onClose,
   runActions,
   onReadPlan,
+  dockLeft = false,
 }: {
   open: boolean;
   onOpen?: () => void;
   onClose: () => void;
   runActions: RunActions;
   onReadPlan: () => void;
+  dockLeft?: boolean;
 }) {
   const lang = useRoam((s) => s.lang);
   const t = (k: DictKey) => translate(lang, k);
@@ -62,10 +64,19 @@ export function VoicePanel({
   const [caption, setCaption] = useState<string | null>(null);
   const [ttsOn, setTtsOn] = useState(true);
   const [sttMode, setSttMode] = useState<"webspeech" | "whisper" | "unavailable">("whisper");
-  const [handsFreeOn, setHandsFreeOn] = useState(false);
+  const [handsFreeOn, setHandsFreeOn] = useState(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("roam_hands_free");
+      if (stored !== null) return stored === "true";
+    }
+    return true;
+  });
   const [webllmOn, setWebllmOn] = useState(false);
   const [webllmStatus, setWebllmStatus] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [manualDock, setManualDock] = useState<"left" | "right" | null>(null);
+  const activeDock = manualDock ?? (dockLeft ? "left" : "right");
+  const dragControls = useDragControls();
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const wakeRecRef = useRef<SpeechRecognitionLike | null>(null);
@@ -75,6 +86,7 @@ export function VoicePanel({
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const whisperRef = useRef<{ transcribe: (audio: Float32Array) => Promise<string> } | null>(null);
   const webllmRef = useRef<{ generate: (prompt: string) => Promise<string> } | null>(null);
+  const startWakeSpotterRef = useRef<(() => void) | null>(null);
   const sessionIdRef = useRef("");
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -112,7 +124,17 @@ export function VoicePanel({
       u.rate = 1.02;
       u.onboundary = () => setCaption(text);
       u.onstart = () => setCaption(text);
-      u.onend = () => setTimeout(() => setCaption(null), 900);
+      u.onend = () => {
+        setTimeout(() => setCaption(null), 900);
+        if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+          startWakeSpotterRef.current?.();
+        }
+      };
+      u.onerror = () => {
+        if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+          startWakeSpotterRef.current?.();
+        }
+      };
       speechSynthesis.speak(u);
     },
     [voiceLocale],
@@ -123,6 +145,9 @@ export function VoicePanel({
       stopSpeaking();
       if (!ttsOn) {
         setCaption(text);
+        if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+          startWakeSpotterRef.current?.();
+        }
         return;
       }
       setCaption(text);
@@ -145,6 +170,9 @@ export function VoicePanel({
             URL.revokeObjectURL(url);
             audioPlayerRef.current = null;
             setTimeout(() => setCaption(null), 800);
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+              startWakeSpotterRef.current?.();
+            }
           };
 
           audio.onerror = () => {
@@ -205,10 +233,27 @@ export function VoicePanel({
         }
 
         // 2) Server rules (+ optional Groq/OpenRouter/Ollama via env)
+        const currentPlan = useRoam.getState().plan;
+        const currentItinerary = currentPlan?.days?.map((d, idx) => ({
+          day: idx + 1,
+          stops: d.stops.map((s) => ({
+            name: s.name,
+            category: s.category,
+            timeOfDay: s.timeOfDay,
+            slotStart: s.slotStart,
+            slotEnd: s.slotEnd,
+          })),
+        }));
+
         const res = await fetch("/api/assistant", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript, sessionId: sessionId(), nlu: "rules" }),
+          body: JSON.stringify({
+            transcript,
+            sessionId: sessionId(),
+            nlu: "rules",
+            currentItinerary,
+          }),
         });
         const data = (await res.json()) as { actions: Action[]; reply: string; nlu: string };
         setThinking(false);
@@ -222,6 +267,9 @@ export function VoicePanel({
         const fallback = "I couldn't reach my language brain — but I'm still here. Try “plan a one-day food trip in Kalyan under ₹500”.";
         setMessages((m) => [...m, { role: "roam", text: fallback }]);
         setCaption(fallback);
+        if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+          startWakeSpotterRef.current?.();
+        }
       }
     },
     [runActions, speak, webllmOn],
@@ -353,7 +401,12 @@ export function VoicePanel({
         setListening(false);
         listeningRef.current = false;
 
-        if (chunks.length === 0) return;
+        if (chunks.length === 0) {
+          if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+            startWakeSpotterRef.current?.();
+          }
+          return;
+        }
 
         setThinking(true);
         thinkingRef.current = true;
@@ -384,19 +437,31 @@ export function VoicePanel({
               return;
             } else {
               toast.message("Didn't catch any audio — tap and speak again.");
+              if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+                startWakeSpotterRef.current?.();
+              }
             }
           } else if (res.status === 501) {
             toast.message("Groq Whisper key not configured on server — switching to browser speech.");
             setSttMode("webspeech");
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+              startWakeSpotterRef.current?.();
+            }
           } else {
             toast.error("Whisper transcription failed — falling back to browser speech.");
             setSttMode("webspeech");
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+              startWakeSpotterRef.current?.();
+            }
           }
         } catch {
           setWebllmStatus(null);
           setThinking(false);
           thinkingRef.current = false;
           toast.error("Audio upload error — try typing or browser speech.");
+          if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+            startWakeSpotterRef.current?.();
+          }
         }
       };
 
@@ -412,6 +477,9 @@ export function VoicePanel({
       } else {
         toast.error("Failed to start voice recording — switched to browser speech.");
         setSttMode("webspeech");
+      }
+      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+        startWakeSpotterRef.current?.();
       }
     }
   }, [stopSpeaking, stopWakeSpotter, submit, voiceLocale]);
@@ -462,10 +530,16 @@ export function VoicePanel({
       listeningRef.current = false;
       if (e.error === "not-allowed") toast.error("Microphone permission denied — use text chat instead.");
       else if (e.error !== "aborted") toast.message("Voice hiccup — try again or type below.");
+      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+        startWakeSpotterRef.current?.();
+      }
     };
     rec.onend = () => {
       setListening(false);
       listeningRef.current = false;
+      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+        startWakeSpotterRef.current?.();
+      }
     };
     rec.start();
     setListening(true);
@@ -485,53 +559,79 @@ export function VoicePanel({
 
   const startWakeSpotter = useCallback((): void => {
     stopWakeSpotter();
+    if (listeningRef.current || thinkingRef.current || !handsFreeRef.current) return;
     const Ctor = getRecognition();
     if (!Ctor) return;
-    const rec = new Ctor();
-    wakeRecRef.current = rec;
-    rec.lang = voiceLocale;
-    rec.continuous = true;
-    rec.interimResults = true;
-
-    rec.onresult = (e) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const text = e.results[i][0].transcript;
-        if (matchesWakeWord(text)) {
-          stopSpeaking();
-          playWakeChime();
-          toast.success("👋 'Hey Vibe' detected! Listening…");
-          try {
-            rec.stop();
-          } catch {}
-          onOpenRef.current?.();
-          startListening();
-          return;
-        }
-      }
-    };
-
-    rec.onerror = (e) => {
-      if (e.error === "not-allowed") {
-        setHandsFreeOn(false);
-        handsFreeRef.current = false;
-        toast.error("Microphone permission needed for hands-free wake word.");
-      }
-    };
-
-    rec.onend = () => {
-      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
-        setTimeout(() => {
-          try {
-            if (handsFreeRef.current && !listeningRef.current) rec.start();
-          } catch {}
-        }, 500);
-      }
-    };
-
     try {
+      const rec = new Ctor();
+      wakeRecRef.current = rec;
+      rec.lang = voiceLocale;
+      rec.continuous = true;
+      rec.interimResults = true;
+
+      rec.onresult = (e) => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const text = e.results[i][0].transcript;
+          if (matchesWakeWord(text)) {
+            stopSpeaking();
+            playWakeChime();
+            toast.success("👋 'Hey Vibe' detected! Listening…");
+            try {
+              rec.stop();
+            } catch {}
+            wakeRecRef.current = null;
+            onOpenRef.current?.();
+            startListening();
+            return;
+          }
+        }
+      };
+
+      rec.onerror = (e) => {
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          // In Chromium, background start before user interaction triggers not-allowed.
+          // Retry automatically on the user's first touch/click rather than killing hands-free.
+          const onUserGesture = () => {
+            window.removeEventListener("click", onUserGesture);
+            window.removeEventListener("keydown", onUserGesture);
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+              startWakeSpotterRef.current?.();
+            }
+          };
+          window.addEventListener("click", onUserGesture, { once: true });
+          window.addEventListener("keydown", onUserGesture, { once: true });
+        }
+      };
+
+      rec.onend = () => {
+        wakeRecRef.current = null;
+        if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+          setTimeout(() => {
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+              startWakeSpotterRef.current?.();
+            }
+          }, 400);
+        }
+      };
+
       rec.start();
-    } catch {}
-  }, [startListening, stopWakeSpotter, voiceLocale]);
+    } catch {
+      // ignore
+    }
+  }, [startListening, stopSpeaking, stopWakeSpotter, voiceLocale]);
+
+  useEffect(() => {
+    startWakeSpotterRef.current = startWakeSpotter;
+  }, [startWakeSpotter]);
+
+  useEffect(() => {
+    if (handsFreeOn) {
+      startWakeSpotter();
+    }
+    return () => {
+      stopWakeSpotter();
+    };
+  }, [handsFreeOn, startWakeSpotter, stopWakeSpotter]);
 
   // ── WebLLM opt-in loader ──────────────────────────────────────────────────
   const toggleWebllm = useCallback(async (): Promise<void> => {
@@ -594,6 +694,9 @@ export function VoicePanel({
       setListening(false);
       listeningRef.current = false;
       setCaption(null);
+      if (handsFreeRef.current && !thinkingRef.current) {
+        startWakeSpotterRef.current?.();
+      }
     }
   }, [open, stopSpeaking]);
 
@@ -607,25 +710,61 @@ export function VoicePanel({
     <AnimatePresence>
       {open && (
         <motion.div
+          drag
+          dragControls={dragControls}
+          dragListener={false}
+          dragMomentum={false}
           initial={{ y: 60, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 60, opacity: 0 }}
           transition={SPRING}
-          className="clay-raised-lg fixed bottom-20 sm:bottom-24 inset-x-3 sm:inset-x-auto sm:right-4 z-[100] flex max-h-[75dvh] sm:max-h-[70dvh] sm:w-[420px] flex-col overflow-hidden no-print"
+          className={cn(
+            "clay-raised-lg fixed bottom-20 sm:bottom-6 z-[100] flex max-h-[75dvh] sm:max-h-[70dvh] sm:w-[420px] flex-col overflow-hidden no-print shadow-2xl transition-[left,right] duration-300",
+            activeDock === "left"
+              ? "inset-x-3 sm:inset-x-auto sm:left-6 sm:right-auto"
+              : "inset-x-3 sm:inset-x-auto sm:right-4 sm:left-auto",
+          )}
           role="dialog"
           aria-label="Roam voice assistant"
         >
           {/* header */}
-          <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
-            <span className="flex items-center gap-2 text-sm font-bold">
+          <div
+            onPointerDown={(e) => {
+              const target = e.target as HTMLElement;
+              if (!target.closest("button") && !target.closest("input")) {
+                dragControls.start(e);
+              }
+            }}
+            className="flex items-center justify-between gap-2 border-b border-border px-4 py-3 cursor-grab active:cursor-grabbing select-none"
+          >
+            <span className="flex items-center gap-1.5 text-sm font-bold">
+              <GripHorizontal size={14} className="text-muted-foreground/60" />
               <Ear size={15} className="text-primary" /> Voice planner
             </span>
-            <div className="flex gap-1">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setManualDock(activeDock === "left" ? "right" : "left")}
+                className="p-1 rounded-lg hover:bg-surface text-muted-foreground hover:text-foreground transition-colors mr-0.5"
+                title={activeDock === "left" ? "Dock to right side" : "Dock to left side"}
+                aria-label="Toggle panel docking position"
+              >
+                <ArrowLeftRight size={13} />
+              </button>
               {(["en", "hi", "mr"] as const).map((l) => (
                 <Chip key={l} active={lang === l} className="h-7 px-2 text-[11px]" onClick={() => useRoam.getState().setLang(l)}>
                   {l.toUpperCase()}
                 </Chip>
               ))}
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-1 rounded-lg hover:bg-surface text-muted-foreground hover:text-foreground transition-colors ml-0.5"
+                title="Close voice assistant"
+                aria-label="Close"
+              >
+                <X size={15} />
+              </button>
             </div>
           </div>
 
@@ -738,6 +877,9 @@ export function VoicePanel({
                 const next = !handsFreeOn;
                 setHandsFreeOn(next);
                 handsFreeRef.current = next;
+                if (typeof window !== "undefined") {
+                  localStorage.setItem("roam_hands_free", String(next));
+                }
                 if (next) {
                   toast.success("Hands-Free active! Say 'Hey Vibe' or 'Hey Roamy' anytime.");
                   startWakeSpotter();

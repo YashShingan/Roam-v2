@@ -230,6 +230,8 @@ export interface TripPlan {
 // ─── Voice assistant ─────────────────────────────────────────────────────────
 export type Vibe = "chill" | "packed" | "foodie" | "heritage";
 
+export type TargetSlot = "morning" | "afternoon" | "evening";
+
 export type Action =
   | { type: "set_city"; city: string }
   | {
@@ -255,8 +257,10 @@ export type Action =
       startAnchor?: Omit<StartAnchor, "lat" | "lon"> & { lat?: number; lon?: number };
       timeMode?: TimeMode;
     }
-  | { type: "add_stop"; name: string }
-  | { type: "remove_stop"; name: string }
+  | { type: "add_stop"; name: string; day?: number; slot?: TargetSlot }
+  | { type: "remove_stop"; name: string; day?: number }
+  | { type: "move_stop"; name: string; fromDay?: number; toDay: number; slot?: TargetSlot }
+  | { type: "swap_stops"; stopA: string; dayA?: number; stopB: string; dayB?: number }
   | { type: "reorder"; from: number; to: number }
   | { type: "surprise_me" }
   | { type: "compare"; names: string[] }

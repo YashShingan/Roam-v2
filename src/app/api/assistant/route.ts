@@ -9,6 +9,22 @@ const Body = z.object({
   transcript: z.string().min(1).max(1000),
   sessionId: z.string().min(1).max(80),
   nlu: z.enum(["rules", "ollama", "groq", "openrouter"]).optional().default("rules"),
+  currentItinerary: z
+    .array(
+      z.object({
+        day: z.number(),
+        stops: z.array(
+          z.object({
+            name: z.string(),
+            category: z.string().optional(),
+            timeOfDay: z.string().optional(),
+            slotStart: z.string().optional(),
+            slotEnd: z.string().optional(),
+          }),
+        ),
+      }),
+    )
+    .optional(),
 });
 
 const ActionSchema: z.ZodType<Action> = z.discriminatedUnion("type", [
@@ -44,8 +60,31 @@ const ActionSchema: z.ZodType<Action> = z.discriminatedUnion("type", [
       .optional(),
     timeMode: z.enum(["recommended", "capped"]).optional(),
   }),
-  z.object({ type: z.literal("add_stop"), name: z.string().min(1) }),
-  z.object({ type: z.literal("remove_stop"), name: z.string().min(1) }),
+  z.object({
+    type: z.literal("add_stop"),
+    name: z.string().min(1),
+    day: z.number().optional(),
+    slot: z.enum(["morning", "afternoon", "evening"]).optional(),
+  }),
+  z.object({
+    type: z.literal("remove_stop"),
+    name: z.string().min(1),
+    day: z.number().optional(),
+  }),
+  z.object({
+    type: z.literal("move_stop"),
+    name: z.string().min(1),
+    fromDay: z.number().optional(),
+    toDay: z.number(),
+    slot: z.enum(["morning", "afternoon", "evening"]).optional(),
+  }),
+  z.object({
+    type: z.literal("swap_stops"),
+    stopA: z.string().min(1),
+    dayA: z.number().optional(),
+    stopB: z.string().min(1),
+    dayB: z.number().optional(),
+  }),
   z.object({ type: z.literal("reorder"), from: z.number(), to: z.number() }),
   z.object({ type: z.literal("surprise_me") }),
   z.object({ type: z.literal("compare"), names: z.array(z.string()).min(2).max(3) }),
@@ -98,12 +137,27 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "mutate_itinerary",
-      description: "Modify the current itinerary: add stop, remove stop, adapt for weather, adjust for delays.",
+      description: "Modify the current itinerary: move a stop to another day or time slot, swap two stops across or within days, add a stop, remove a stop, adapt for weather, or adjust for delays.",
       parameters: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["add_stop", "remove_stop", "adapt_weather", "running_late"] },
-          stopName: { type: "string", description: "Name of the place to add or remove" },
+          action: {
+            type: "string",
+            enum: ["add_stop", "remove_stop", "move_stop", "swap_stops", "adapt_weather", "running_late"],
+            description: "Action type: 'swap_stops' to exchange two stops, 'move_stop' to relocate an existing stop, 'add_stop' to add a place, 'remove_stop' to delete."
+          },
+          stopName: { type: "string", description: "Name of the place to add, remove, or move" },
+          fromDay: { type: "integer", minimum: 1, maximum: 7, description: "Source day number (1-indexed) if moving" },
+          targetDay: { type: "integer", minimum: 1, maximum: 7, description: "Target day number (1-indexed) to move or add the stop to (e.g. 2 for Day 2)" },
+          targetSlot: {
+            type: "string",
+            enum: ["morning", "afternoon", "evening"],
+            description: "Time of day slot: 'morning' (starts 8am-11am), 'afternoon' (12pm-4pm), 'evening' (5pm-9pm)"
+          },
+          stopA: { type: "string", description: "First stop name if action is swap_stops" },
+          dayA: { type: "integer", minimum: 1, maximum: 7, description: "Day number of first stop if action is swap_stops" },
+          stopB: { type: "string", description: "Second stop name if action is swap_stops" },
+          dayB: { type: "integer", minimum: 1, maximum: 7, description: "Day number of second stop if action is swap_stops" },
           condition: { type: "string", enum: ["rain", "heat"], description: "Weather condition to adapt for" },
           delayMinutes: { type: "integer", description: "Minutes running late to catch up (default 60)" }
         },
@@ -157,9 +211,23 @@ const AGENT_TOOLS = [
   }
 ];
 
+interface ItineraryStopContext {
+  name: string;
+  category?: string;
+  timeOfDay?: string;
+  slotStart?: string;
+  slotEnd?: string;
+}
+
+interface ItineraryDayContext {
+  day: number;
+  stops: ItineraryStopContext[];
+}
+
 async function callAgentLLM(
   transcript: string,
   city?: string,
+  currentItinerary?: ItineraryDayContext[],
 ): Promise<{ actions: Action[]; reply: string; nlu: "groq" | "openrouter" } | null> {
   const isGroq = !!GROQ_API_KEY;
   const isOR = !isGroq && !!OPENROUTER_API_KEY;
@@ -174,11 +242,39 @@ async function callAgentLLM(
     ? ([process.env.GROQ_MODEL, "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"].filter(Boolean) as string[])
     : [process.env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct:free"];
 
+  let itineraryContext = "";
+  if (currentItinerary && currentItinerary.length > 0) {
+    itineraryContext =
+      "\n\nCURRENT ACTIVE ITINERARY IN ROAM:\n" +
+      currentItinerary
+        .map(
+          (d) =>
+            `Day ${d.day}:\n` +
+            (d.stops.length > 0
+              ? d.stops
+                  .map(
+                    (s) =>
+                      `  - "${s.name}" (Role/Category: ${s.timeOfDay || s.category || "stop"}, Scheduled: ${s.slotStart || "unslotted"}-${s.slotEnd || ""})`,
+                  )
+                  .join("\n")
+              : "  (Empty day)"),
+        )
+        .join("\n");
+  }
+
   const systemMsg = `You are Roam's expert AI travel agent for Indian destinations and local experiences.
-Current active city context: ${city || "Pune"}.
+Current active city context: ${city || "Pune"}.${itineraryContext}
 The user will speak or type natural travel requests in English, Hinglish, or casual phrasing.
 Always decide the appropriate tool call(s) and provide a warm, concise, natural verbal reply acknowledging what you are doing (e.g., "Planning a 2-day relaxed family trip in Pune with lunch on FC road...").
-If the user asks a general question about travel, timing, weather, or tips, answer concisely.
+
+Tool rules:
+- When the user asks to swap two stops (e.g., "swap the morning breakfast place in day 2 with day 1", "swap Vaishali with Cafe Goodluck", "swap stop A with stop B"), consult CURRENT ACTIVE ITINERARY above to identify the exact place names and days, and call mutate_itinerary with action="swap_stops", stopA="...", dayA=?, stopB="...", dayB=?.
+- When the user refers to places by relative semantic role (e.g., "the breakfast place in day 2", "the fort on day 1", "the place I moved to day 2"), consult CURRENT ACTIVE ITINERARY above to resolve the exact place name.
+- When the user asks to move, reschedule, or shift a specific stop (e.g., "move Shaniwar Wada to day 2 in the morning", "move the breakfast place which I moved to day 2 back to day 1"), use mutate_itinerary with action="move_stop", stopName="...", targetDay=?, and targetSlot="morning" | "afternoon" | "evening". NEVER call plan_trip for moving, shifting, or rescheduling stops.
+- When the user asks to add or include a specific place to a day, use mutate_itinerary with action="add_stop", stopName="...", targetDay=?, targetSlot=?.
+- When the user asks to remove, delete, or drop a stop, use mutate_itinerary with action="remove_stop", stopName="...", fromDay=?.
+- Only call plan_trip when the user explicitly requests generating or replanning a complete new trip itinerary from scratch.
+- If the user asks a general question about travel, timing, weather, or tips, answer concisely without calling tools.
 Never invent proprietary IDs. When user mentions places, specify them by name.`;
 
   for (const model of modelsToTry) {
@@ -251,10 +347,66 @@ Never invent proprietary IDs. When user mentions places, specify them by name.`;
           }
         } else if (fnName === "mutate_itinerary") {
           const act = args.action;
-          if (act === "add_stop" && typeof args.stopName === "string") {
-            actions.push({ type: "add_stop", name: args.stopName });
+          if (act === "swap_stops") {
+            const stopA = typeof args.stopA === "string" ? args.stopA : typeof args.stopName === "string" ? args.stopName : "";
+            const stopB = typeof args.stopB === "string" ? args.stopB : "";
+            if (stopA && stopB) {
+              const dayA = typeof args.dayA === "number" ? args.dayA : undefined;
+              const dayB = typeof args.dayB === "number" ? args.dayB : undefined;
+              actions.push({
+                type: "swap_stops",
+                stopA,
+                dayA,
+                stopB,
+                dayB,
+              });
+              if (!verbalReply) {
+                const dayAstr = dayA ? ` in Day ${dayA}` : "";
+                const dayBstr = dayB ? ` in Day ${dayB}` : "";
+                verbalReply = `Swapping ${stopA}${dayAstr} with ${stopB}${dayBstr}.`;
+              }
+            }
+          } else if (act === "move_stop" && typeof args.stopName === "string") {
+            const toDay = typeof args.targetDay === "number" ? args.targetDay : 2;
+            const slot = typeof args.targetSlot === "string" && ["morning", "afternoon", "evening"].includes(args.targetSlot)
+              ? (args.targetSlot as "morning" | "afternoon" | "evening")
+              : undefined;
+            actions.push({
+              type: "move_stop",
+              name: args.stopName,
+              fromDay: typeof args.fromDay === "number" ? args.fromDay : undefined,
+              toDay,
+              slot,
+            });
+            if (!verbalReply) {
+              const slotStr = slot ? ` in the ${slot}` : "";
+              verbalReply = `Moving ${args.stopName} to Day ${toDay}${slotStr}.`;
+            }
+          } else if (act === "add_stop" && typeof args.stopName === "string") {
+            const targetDay = typeof args.targetDay === "number" ? args.targetDay : undefined;
+            const slot = typeof args.targetSlot === "string" && ["morning", "afternoon", "evening"].includes(args.targetSlot)
+              ? (args.targetSlot as "morning" | "afternoon" | "evening")
+              : undefined;
+            actions.push({
+              type: "add_stop",
+              name: args.stopName,
+              day: targetDay,
+              slot,
+            });
+            if (!verbalReply) {
+              const dayStr = targetDay ? ` to Day ${targetDay}` : "";
+              const slotStr = slot ? ` (${slot})` : "";
+              verbalReply = `Adding ${args.stopName}${dayStr}${slotStr}.`;
+            }
           } else if (act === "remove_stop" && typeof args.stopName === "string") {
-            actions.push({ type: "remove_stop", name: args.stopName });
+            actions.push({
+              type: "remove_stop",
+              name: args.stopName,
+              day: typeof args.fromDay === "number" ? args.fromDay : undefined,
+            });
+            if (!verbalReply) {
+              verbalReply = `Removing ${args.stopName} from your itinerary.`;
+            }
           } else if (act === "adapt_weather") {
             actions.push({ type: "adapt_weather", condition: args.condition === "heat" ? "heat" : "rain" });
           } else if (act === "running_late") {
@@ -343,7 +495,7 @@ export async function POST(req: Request) {
     const mem = sessionMemory(body.sessionId);
 
     // 1. Try Groq / OpenRouter function calling agent first (fastest, most accurate)
-    const agentResult = await callAgentLLM(body.transcript, mem.city);
+    const agentResult = await callAgentLLM(body.transcript, mem.city, body.currentItinerary);
     if (agentResult && agentResult.actions.length > 0) {
       const cityAct = agentResult.actions.find((a): a is Extract<Action, { type: "set_city" }> => a.type === "set_city");
       if (cityAct) mem.city = cityAct.city;

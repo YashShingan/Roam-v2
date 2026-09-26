@@ -199,4 +199,303 @@ describe("Circumstance Adapter & Agent Replanning", () => {
     // Total stops per day should not exceed 7
     expect(plan.days[0].stops.length).toBeLessThanOrEqual(7);
   });
+
+  it("parses 'move [stop] to day [N] [slot]' in rule-based NLU", async () => {
+    const { parseTranscript } = await import("@/lib/nlu");
+    const res1 = await parseTranscript("Move Shaniwar Wada to day 2 in the morning", "test_sess_1");
+    expect(res1.actions.length).toBe(1);
+    expect(res1.actions[0]).toEqual({
+      type: "move_stop",
+      name: "Shaniwar Wada",
+      toDay: 2,
+      slot: "morning",
+    });
+
+    const res2 = await parseTranscript("Shift Aga Khan Palace to day 3 evening", "test_sess_2");
+    expect(res2.actions.length).toBe(1);
+    expect(res2.actions[0]).toEqual({
+      type: "move_stop",
+      name: "Aga Khan Palace",
+      toDay: 3,
+      slot: "evening",
+    });
+
+    const res3 = await parseTranscript("Add Cafe Goodluck to day 2 in the afternoon", "test_sess_3");
+    expect(res3.actions.length).toBe(1);
+    expect(res3.actions[0]).toEqual({
+      type: "add_stop",
+      name: "Cafe Goodluck",
+      day: 2,
+      slot: "afternoon",
+    });
+  });
+
+  it("relocates a stop to Day 2 morning and cleanly reslots times", async () => {
+    const { recomputePlanMetrics } = await import("@/lib/planner");
+    const plan: TripPlan = {
+      id: "test_move",
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      createdAt: "2026-09-26T10:00:00Z",
+      voiceSummary: "Test trip",
+      feasibility: { ok: true, message: "ok" },
+      shareUrl: "/?trip=test_move",
+      days: [
+        {
+          totalHours: 4,
+          stops: [
+            {
+              experienceId: "p1",
+              name: "Shaniwar Wada",
+              category: "culture",
+              slotStart: "09:00",
+              slotEnd: "10:30",
+              durationMinutes: 90,
+              travelMinFromPrev: 0,
+              lat: 18.519,
+              lon: 73.855,
+            },
+            {
+              experienceId: "p2",
+              name: "Dagdusheth Temple",
+              category: "culture",
+              slotStart: "10:45",
+              slotEnd: "11:45",
+              durationMinutes: 60,
+              travelMinFromPrev: 15,
+              lat: 18.516,
+              lon: 73.856,
+            },
+          ],
+        },
+        {
+          totalHours: 3,
+          stops: [
+            {
+              experienceId: "p3",
+              name: "Saras Baug",
+              category: "nature",
+              slotStart: "12:00",
+              slotEnd: "13:30",
+              durationMinutes: 90,
+              travelMinFromPrev: 0,
+              lat: 18.502,
+              lon: 73.853,
+            },
+          ],
+        },
+      ],
+    };
+
+    // Move Shaniwar Wada to Day 2 morning
+    const [moved] = plan.days[0].stops.splice(0, 1);
+    expect(moved.name).toBe("Shaniwar Wada");
+    expect(plan.days[0].stops.length).toBe(1);
+    expect(plan.days[0].stops[0].name).toBe("Dagdusheth Temple");
+
+    // Insert at index 0 on Day 2 for morning slot
+    plan.days[1].stops.unshift(moved);
+    const updated = recomputePlanMetrics(plan, { reslot: true });
+
+    // Day 1 check
+    expect(updated.days[0].stops.length).toBe(1);
+    expect(updated.days[0].stops[0].name).toBe("Dagdusheth Temple");
+    // Day 2 check
+    expect(updated.days[1].stops.length).toBe(2);
+    expect(updated.days[1].stops[0].name).toBe("Shaniwar Wada");
+    expect(updated.days[1].stops[0].slotStart).toBe("09:00");
+    expect(updated.days[1].stops[1].name).toBe("Saras Baug");
+    expect(updated.days[1].stops[1].slotStart).toBe("11:13");
+  });
+
+  it("parses swap_stops with and without explicit days in NLU", async () => {
+    const { parseTranscript } = await import("@/lib/nlu");
+
+    const r1 = await parseTranscript("swap Vaishali with Cafe Goodluck", "test_swap_1");
+    expect(r1.actions).toEqual([
+      {
+        type: "swap_stops",
+        stopA: "Vaishali",
+        dayA: undefined,
+        stopB: "Cafe Goodluck",
+        dayB: undefined,
+      },
+    ]);
+
+    const r2 = await parseTranscript("swap Vaishali in day 1 with Cafe Goodluck in day 2", "test_swap_2");
+    expect(r2.actions).toEqual([
+      {
+        type: "swap_stops",
+        stopA: "Vaishali",
+        dayA: 1,
+        stopB: "Cafe Goodluck",
+        dayB: 2,
+      },
+    ]);
+  });
+
+  it("swaps stops across days and recalculates slots accurately", async () => {
+    const { recomputePlanMetrics } = await import("@/lib/planner");
+    const plan: TripPlan = {
+      id: "test_swap_exec",
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      createdAt: "2026-09-26T10:00:00Z",
+      voiceSummary: "Test trip",
+      feasibility: { ok: true, message: "ok" },
+      shareUrl: "/?trip=test_swap_exec",
+      days: [
+        {
+          totalHours: 4,
+          stops: [
+            {
+              experienceId: "p1",
+              name: "Vaishali",
+              category: "food",
+              timeOfDay: "breakfast",
+              slotStart: "09:00",
+              slotEnd: "10:00",
+              durationMinutes: 60,
+              travelMinFromPrev: 0,
+              lat: 18.520,
+              lon: 73.840,
+            },
+            {
+              experienceId: "p2",
+              name: "Shaniwar Wada",
+              category: "culture",
+              slotStart: "10:30",
+              slotEnd: "12:00",
+              durationMinutes: 90,
+              travelMinFromPrev: 15,
+              lat: 18.519,
+              lon: 73.855,
+            },
+          ],
+        },
+        {
+          totalHours: 4,
+          stops: [
+            {
+              experienceId: "p3",
+              name: "Cafe Goodluck",
+              category: "food",
+              timeOfDay: "breakfast",
+              slotStart: "09:00",
+              slotEnd: "10:00",
+              durationMinutes: 60,
+              travelMinFromPrev: 0,
+              lat: 18.517,
+              lon: 73.841,
+            },
+            {
+              experienceId: "p4",
+              name: "Saras Baug",
+              category: "nature",
+              slotStart: "10:30",
+              slotEnd: "12:00",
+              durationMinutes: 90,
+              travelMinFromPrev: 15,
+              lat: 18.502,
+              lon: 73.853,
+            },
+          ],
+        },
+      ],
+    };
+
+    // Swap Vaishali (Day 1) with Cafe Goodluck (Day 2)
+    const stopA = plan.days[0].stops[0];
+    const stopB = plan.days[1].stops[0];
+    plan.days[0].stops[0] = stopB;
+    plan.days[1].stops[0] = stopA;
+
+    const reslotted = recomputePlanMetrics(plan, { reslot: true });
+    expect(reslotted.days[0].stops[0].name).toBe("Cafe Goodluck");
+    expect(reslotted.days[0].stops[0].slotStart).toBe("08:30");
+    expect(reslotted.days[1].stops[0].name).toBe("Vaishali");
+    expect(reslotted.days[1].stops[0].slotStart).toBe("08:30");
+  });
+
+  it("preserves morning slot when moving a breakfast food stop without explicit slot", async () => {
+    const { recomputePlanMetrics } = await import("@/lib/planner");
+    const plan: TripPlan = {
+      id: "test_bfast_slot",
+      city: "Pune",
+      cityLabel: "Pune, Maharashtra",
+      createdAt: "2026-09-26T10:00:00Z",
+      voiceSummary: "Test trip",
+      feasibility: { ok: true, message: "ok" },
+      shareUrl: "/?trip=test_bfast_slot",
+      days: [
+        {
+          totalHours: 3,
+          stops: [
+            {
+              experienceId: "p1",
+              name: "Vaishali Cafe",
+              category: "food",
+              timeOfDay: "breakfast",
+              slotStart: "09:00",
+              slotEnd: "10:00",
+              durationMinutes: 60,
+              travelMinFromPrev: 0,
+              lat: 18.520,
+              lon: 73.840,
+            },
+          ],
+        },
+        {
+          totalHours: 4,
+          stops: [
+            {
+              experienceId: "p2",
+              name: "Aga Khan Palace",
+              category: "culture",
+              slotStart: "10:00",
+              slotEnd: "11:30",
+              durationMinutes: 90,
+              travelMinFromPrev: 0,
+              lat: 18.552,
+              lon: 73.901,
+            },
+            {
+              experienceId: "p3",
+              name: "Vohuman Cafe Dinner",
+              category: "food",
+              timeOfDay: "dinner",
+              slotStart: "19:00",
+              slotEnd: "20:00",
+              durationMinutes: 60,
+              travelMinFromPrev: 20,
+              lat: 18.530,
+              lon: 73.876,
+            },
+          ],
+        },
+      ],
+    };
+
+    // Move Vaishali Cafe to Day 2 without specifying slot
+    const [moved] = plan.days[0].stops.splice(0, 1);
+    const isBfast =
+      moved.category === "food" &&
+      (moved.timeOfDay === "breakfast" ||
+        (moved.slotStart && moved.slotStart < "11:30") ||
+        /breakfast|cafe|chai|tea|bakery|coffee|idli|dosa|poha|misal/i.test(moved.name));
+
+    expect(isBfast).toBe(true);
+
+    // Morning slot should insert at index 0 rather than pushing to end (after dinner)
+    const targetStops = plan.days[1].stops;
+    const hasBreakfast =
+      targetStops[0]?.category === "food" || /breakfast/i.test(targetStops[0]?.note || "");
+    const insertIdx = hasBreakfast && targetStops.length > 1 ? 1 : 0;
+    targetStops.splice(insertIdx, 0, moved);
+
+    const reslotted = recomputePlanMetrics(plan, { reslot: true });
+    expect(reslotted.days[1].stops[0].name).toBe("Vaishali Cafe");
+    expect(reslotted.days[1].stops[0].slotStart).toBe("08:30");
+    expect(reslotted.days[1].stops[1].name).toBe("Aga Khan Palace");
+  });
 });

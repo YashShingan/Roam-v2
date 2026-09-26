@@ -45,5 +45,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - Start anchors without pre-resolved coordinates (e.g. from LLM tool calling or voice landmark mentions) must never inject Null Island `(0,0)`. They must be resolved against city places or safely fall back to the city center coordinates.
    - Initial route leg travel times are capped so scheduled stop slots always start strictly within morning waking hours (`08:30–09:30 AM`), never wrapping into night hours.
    - Generated itineraries must never assign more than 7 stops per day (including meal anchors) unless explicitly hand-picked by the user.
+13. **Wake Word Re-arming Lifecycle & Itinerary Context Injection (`src/components/voice.tsx`, `src/app/api/assistant/route.ts`)**:
+   - Hands-free wake word spotters must automatically re-arm whenever an interaction turn concludes (in `audio.onended`, browser speech `u.onend`, or turn timeout). Never leave the wake recognition instance stopped after playback.
+   - All assistant NLU queries must include the active `currentItinerary` summary so relative semantic references ("the breakfast place in day 2", "move it back to day 1") can be resolved against real place names and categories.
+   - Stop moves and swaps without an explicit time-of-day parameter must preserve the stop's category-appropriate slot (e.g. breakfast/morning places stay in morning slots, lunch in afternoon) rather than appending to the end of the day.
 
 

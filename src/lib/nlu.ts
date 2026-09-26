@@ -151,7 +151,7 @@ export async function parseTranscript(transcript: string, sessionId: string): Pr
     replyParts.push(
       `Planning ${planIntent.days} day${planIntent.days > 1 ? "s" : ""} (${planIntent.hoursPerDay} h/day)${planIntent.interests?.length ? ` focused on ${planIntent.interests.join(", ").replaceAll("_", " ")}` : ""}${planIntent.budget ? ` under ₹${planIntent.budget}` : ""} in ${mem.city ?? "your city"}.`,
     );
-  } else if (cats.length || budget !== undefined || timeOfDay) {
+  } else if (!/\b(?:move|shift|relocate|add|include|remove|drop|delete|take out|swap|reorder)\b/i.test(low) && (cats.length || budget !== undefined || timeOfDay)) {
     const filters: { categories?: Category[]; budget?: number; timeOfDay?: string; openNow?: boolean; hiddenGem?: boolean } = {};
     if (cats.length) {
       filters.categories = cats;
@@ -168,22 +168,61 @@ export async function parseTranscript(transcript: string, sessionId: string): Pr
   }
 
   // 3. stops
-  const addM = low.match(/\b(?:add|include)\s+(?:a\s+stop\s+(?:at|for)\s+)?(.+?)(?:\s+to (?:the )?(?:plan|day|trip))?$/);
-  if (addM && !/filter|category/i.test(low)) {
-    const name = t.slice(t.toLowerCase().indexOf(addM[1]), t.toLowerCase().indexOf(addM[1]) + addM[1].length).replace(/^(a|an|the)\s+/i, "").trim();
-    if (name.length > 1) {
-      actions.push({ type: "add_stop", name: name.replace(/[.!?]+$/, "") });
-      replyParts.push(`Adding ${name}.`);
+  const moveM = t.match(/\b(?:move|shift|relocate|transfer)\s+(?:the\s+)?(.+?)\s+to\s+day\s*(\d+)(?:\s+(?:in\s+the\s+)?(morning|afternoon|evening))?/i);
+  if (moveM) {
+    const rawName = moveM[1].replace(/^(a|an|the)\s+/i, "").replace(/[.!?]+$/, "").trim();
+    const toDay = parseInt(moveM[2], 10);
+    const slot = moveM[3]?.toLowerCase() as "morning" | "afternoon" | "evening" | undefined;
+    if (rawName && !isNaN(toDay)) {
+      actions.push({
+        type: "move_stop",
+        name: rawName,
+        toDay,
+        slot,
+      });
+      const slotText = slot ? ` in the ${slot}` : "";
+      replyParts.push(`Moving ${rawName} to Day ${toDay}${slotText}.`);
     }
   }
-  const rmM = low.match(/\b(?:remove|drop|skip|delete|take out)\s+(?:the\s+)?(.+?)(?:\s+from (?:the )?(?:plan|day|trip))?$/);
-  if (rmM) {
-    const name = rmM[1].replace(/^(a|an|the)\s+/i, "").replace(/[.!?]+$/, "").trim();
-    actions.push({ type: "remove_stop", name });
-    replyParts.push(`Removing ${name}.`);
+
+  const addM = t.match(/\b(?:add|include)\s+(?:a\s+stop\s+(?:at|for)\s+)?(.+?)(?:\s+to\s+(?:the\s+)?(?:plan|trip|day\s*(\d+)))?(?:\s+(?:in\s+the\s+)?(morning|afternoon|evening))?$/i);
+  if (addM && !moveM && !/filter|category/i.test(low)) {
+    const rawName = addM[1].replace(/^(a|an|the)\s+/i, "").replace(/[.!?]+$/, "").trim();
+    const day = addM[2] ? parseInt(addM[2], 10) : undefined;
+    const slot = addM[3]?.toLowerCase() as "morning" | "afternoon" | "evening" | undefined;
+    if (rawName.length > 1) {
+      actions.push({ type: "add_stop", name: rawName, day, slot });
+      const dayStr = day ? ` to Day ${day}` : "";
+      const slotStr = slot ? ` (${slot})` : "";
+      replyParts.push(`Adding ${rawName}${dayStr}${slotStr}.`);
+    }
   }
-  const swapM = low.match(/\b(?:swap|move|reorder)\b.*\b(first|second|third|fourth|fifth|(\d+))\b.*\b(?:to|with|after)\b.*\b(first|second|third|fourth|fifth|(\d+))\b/i);
-  if (swapM) {
+
+  const rmM = t.match(/\b(?:remove|drop|skip|delete|take out)\s+(?:the\s+)?(.+?)(?:\s+from\s+(?:the\s+)?(?:plan|trip|day\s*(\d+)))?$/i);
+  if (rmM && !moveM) {
+    const rawName = rmM[1].replace(/^(a|an|the)\s+/i, "").replace(/[.!?]+$/, "").trim();
+    const day = rmM[2] ? parseInt(rmM[2], 10) : undefined;
+    actions.push({ type: "remove_stop", name: rawName, day });
+    const dayStr = day ? ` from Day ${day}` : "";
+    replyParts.push(`Removing ${rawName}${dayStr}.`);
+  }
+
+  const swapStopsM = t.match(/\bswap\s+(?:the\s+)?(.+?)(?:\s+(?:in|from)\s+day\s*(\d+))?\s+(?:with|and)\s+(?:the\s+)?(.+?)(?:\s+(?:in|from)\s+day\s*(\d+))?$/i);
+  if (swapStopsM && !swapStopsM[1].match(/^(first|second|third|fourth|fifth|\d+)$/i)) {
+    const rawA = swapStopsM[1].replace(/^(a|an|the)\s+/i, "").replace(/[.!?]+$/, "").trim();
+    const dayA = swapStopsM[2] ? parseInt(swapStopsM[2], 10) : undefined;
+    const rawB = swapStopsM[3].replace(/^(a|an|the)\s+/i, "").replace(/[.!?]+$/, "").trim();
+    const dayB = swapStopsM[4] ? parseInt(swapStopsM[4], 10) : undefined;
+    if (rawA && rawB) {
+      actions.push({ type: "swap_stops", stopA: rawA, dayA, stopB: rawB, dayB });
+      const dayAstr = dayA ? ` in Day ${dayA}` : "";
+      const dayBstr = dayB ? ` in Day ${dayB}` : "";
+      replyParts.push(`Swapping ${rawA}${dayAstr} with ${rawB}${dayBstr}.`);
+    }
+  }
+
+  const swapM = low.match(/\b(?:swap|reorder)\b.*\b(first|second|third|fourth|fifth|(\d+))\b.*\b(?:to|with|after)\b.*\b(first|second|third|fourth|fifth|(\d+))\b/i);
+  if (swapM && !moveM && !swapStopsM) {
     const from = (ordinalIndex(`${swapM[1]}`) ?? 1) - 1;
     const to = (ordinalIndex(`${swapM[3]}`) ?? 2) - 1;
     actions.push({ type: "reorder", from, to });
