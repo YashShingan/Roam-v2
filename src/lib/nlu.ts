@@ -41,9 +41,9 @@ function extractCategories(t: string): Category[] {
 }
 
 function extractBudget(t: string): number | undefined {
-  const m = t.match(/(?:under|below|less than|max(imum)?|upto|up to|within|budget of|budget)\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d+)?)(k| thousand)?/i)
+  const m = t.match(/(?:under|below|less than|max(?:imum)?|upto|up to|within|budget of|budget)\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d+)?)(k|\s*thousand)?/i)
     ?? t.match(/(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d+)?)(k)?/i);
-  if (!m) return undefined;
+  if (!m || !m[1]) return undefined;
   let n = Number(m[1].replace(/,/g, ""));
   if (m[2] || /thousand/i.test(t)) n *= 1000;
   return Number.isFinite(n) && n > 0 && n <= 100000 ? Math.round(n) : undefined;

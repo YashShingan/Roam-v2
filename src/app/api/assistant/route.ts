@@ -170,7 +170,9 @@ async function callAgentLLM(
     : "https://openrouter.ai/api/v1/chat/completions";
 
   const authHeader = isGroq ? `Bearer ${GROQ_API_KEY}` : `Bearer ${OPENROUTER_API_KEY}`;
-  const model = isGroq ? "llama-3.3-70b-versatile" : "meta-llama/llama-3.3-70b-instruct:free";
+  const modelsToTry = isGroq
+    ? ([process.env.GROQ_MODEL, "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"].filter(Boolean) as string[])
+    : [process.env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct:free"];
 
   const systemMsg = `You are Roam's expert AI travel agent for Indian destinations and local experiences.
 Current active city context: ${city || "Pune"}.
@@ -179,34 +181,36 @@ Always decide the appropriate tool call(s) and provide a warm, concise, natural 
 If the user asks a general question about travel, timing, weather, or tips, answer concisely.
 Never invent proprietary IDs. When user mentions places, specify them by name.`;
 
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: authHeader,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemMsg },
-          { role: "user", content: transcript },
-        ],
-        tools: AGENT_TOOLS,
-        tool_choice: "auto",
-        temperature: 0.1,
-      }),
-      signal: AbortSignal.timeout(12000),
-    });
+  for (const model of modelsToTry) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authHeader,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemMsg },
+            { role: "user", content: transcript },
+          ],
+          tools: AGENT_TOOLS,
+          tool_choice: "auto",
+          temperature: 0.1,
+        }),
+        signal: AbortSignal.timeout(12000),
+      });
 
-    if (!res.ok) {
-      console.warn("Agent LLM API returned status:", res.status);
-      return null;
-    }
+      if (!res.ok) {
+        const errText = await res.text();
+        console.warn(`Agent LLM API returned status ${res.status} for model ${model}:`, errText);
+        continue;
+      }
 
-    const data = await res.json();
-    const choice = data.choices?.[0]?.message;
-    if (!choice) return null;
+      const data = await res.json();
+      const choice = data.choices?.[0]?.message;
+      if (!choice) continue;
 
     const actions: Action[] = [];
     let verbalReply = choice.content || "";
@@ -296,9 +300,10 @@ Never invent proprietary IDs. When user mentions places, specify them by name.`;
       nlu: isGroq ? "groq" : "openrouter",
     };
   } catch (err) {
-    console.warn("Agent LLM call failed:", err);
-    return null;
+    console.warn(`Agent LLM call failed for model ${model}:`, err);
   }
+}
+return null;
 }
 
 async function ollamaActions(transcript: string, city?: string): Promise<Action[] | null> {
