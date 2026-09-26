@@ -159,34 +159,25 @@ describe("Price Intelligence Engine (TS)", () => {
     expect(mealHint?.mode).toBe("meal");
   });
 
-  it("returns honest Varies state when no price signal exists (no fake category fallback)", () => {
+  it("returns honest Varies on site state when no price signal exists (no fake category fallback)", () => {
     const info = deriveStopPriceInfo({ priceHint: null, pricePerPerson: undefined, priceIsEstimate: true });
-    expect(info.priceBasis).toBe("Varies — no reliable signal");
+    expect(info.priceBasis).toBe("Varies on site");
     expect(info.priceMin).toBeUndefined();
   });
 
-  it("provides Google Maps style typical min-max brackets when category is known but crawled snippets are absent", () => {
+  it("honestly returns 'Varies on site' for places lacking crawled price snippets", () => {
+    const cultureInfo = deriveStopPriceInfo({ priceHint: null, category: "culture" });
+    expect(cultureInfo.priceBasis).toBe("Varies on site");
+    expect(cultureInfo.priceMin).toBeUndefined();
+    expect(cultureInfo.priceMax).toBeUndefined();
+
     const natureInfo = deriveStopPriceInfo({ priceHint: null, category: "nature" });
-    expect(natureInfo.priceMin).toBe(0);
-    expect(natureInfo.priceMax).toBe(0);
-    expect(natureInfo.priceBasis).toBe("Free entry");
-    expect(natureInfo.isCategoryTypical).toBe(true);
+    expect(natureInfo.priceBasis).toBe("Varies on site");
+    expect(natureInfo.priceMin).toBeUndefined();
 
     const foodInfo = deriveStopPriceInfo({ priceHint: null, category: "food" });
-    expect(foodInfo.priceMin).toBe(150);
-    expect(foodInfo.priceMax).toBe(350);
-    expect(foodInfo.priceBasis).toContain("₹150–₹350 pp");
-    expect(foodInfo.isCategoryTypical).toBe(true);
-
-    const cultureInfo = deriveStopPriceInfo({ priceHint: null, category: "culture" });
-    expect(cultureInfo.priceMin).toBe(20);
-    expect(cultureInfo.priceMax).toBe(50);
-    expect(cultureInfo.isCategoryTypical).toBe(true);
-
-    const adventureInfo = deriveStopPriceInfo({ priceHint: null, category: "adventure" });
-    expect(adventureInfo.priceMin).toBe(300);
-    expect(adventureInfo.priceMax).toBe(800);
-    expect(adventureInfo.isCategoryTypical).toBe(true);
+    expect(foodInfo.priceBasis).toBe("Varies on site");
+    expect(foodInfo.priceMin).toBeUndefined();
   });
 });
 
@@ -244,11 +235,11 @@ describe("Trip Planner Route Optimization & Strict Category Selection", () => {
     expect(stops.length).toBe(3);
     expect(stops.every((s) => s.category === "culture")).toBe(true);
     expect(stops.some((s) => s.category === "food")).toBe(false);
-    // Check price band (c1: 25, c2: 50, c3: typical culture entry 20–50)
-    expect(plan.budgetBand?.min).toBe(95);
-    expect(plan.budgetBand?.max).toBe(125);
-    expect(plan.budgetBand?.pricedCount).toBe(3);
-    expect(plan.budgetBand?.unpricedCount).toBe(0);
+    // Check price band (c1: 25, c2: 50, c3: unpriced varies on site)
+    expect(plan.budgetBand?.min).toBe(75);
+    expect(plan.budgetBand?.max).toBe(75);
+    expect(plan.budgetBand?.pricedCount).toBe(2);
+    expect(plan.budgetBand?.unpricedCount).toBe(1);
   });
 
   it("orders stops geographically from startAnchor via 2-opt without cross-city backtracking", () => {
@@ -501,6 +492,40 @@ describe("Trip Planner Route Optimization & Strict Category Selection", () => {
     expect(stops.some((s) => s.category === "food")).toBe(true);
     const foodStop = stops.find((s) => s.category === "food");
     expect(foodStop?.name).toBe("Vaishali Restaurant");
+  });
+
+  it("slots meal stops into every day of a multi-day itinerary when meal anchors are active", async () => {
+    const multiDayPlaces: Experience[] = [
+      makeExp({ id: "s1", name: "Temple 1", category: "culture", lat: 19.16, lon: 73.23 }),
+      makeExp({ id: "s2", name: "Temple 2", category: "culture", lat: 19.17, lon: 73.24 }),
+      makeExp({ id: "s3", name: "Temple 3", category: "culture", lat: 19.18, lon: 73.25 }),
+      makeExp({ id: "s4", name: "Nature 1", category: "nature", lat: 19.15, lon: 73.22 }),
+      makeExp({ id: "s5", name: "Nature 2", category: "nature", lat: 19.19, lon: 73.26 }),
+      makeExp({ id: "s6", name: "Nature 3", category: "nature", lat: 19.14, lon: 73.21 }),
+      makeExp({ id: "f1", name: "Cafe One", category: "food", lat: 19.165, lon: 73.235 }),
+      makeExp({ id: "f2", name: "Dhaba Two", category: "food", lat: 19.175, lon: 73.245 }),
+      makeExp({ id: "f3", name: "Bhojanalaya Three", category: "food", lat: 19.155, lon: 73.225 }),
+    ];
+
+    const plan = await buildTripPlan(multiDayPlaces, {
+      city: "Badlapur",
+      cityLabel: "Badlapur, Maharashtra",
+      lat: 19.167,
+      lon: 73.238,
+      days: 3,
+      hoursPerDay: 8,
+      includeLunch: true,
+    });
+
+    expect(plan.days.length).toBe(3);
+    // Every single day must have a lunch food stop!
+    for (let d = 0; d < 3; d++) {
+      const dayStops = plan.days[d].stops;
+      const hasFood = dayStops.some((s) => s.category === "food");
+      expect(hasFood).toBe(true);
+      const lunchStop = dayStops.find((s) => s.category === "food");
+      expect(lunchStop).toBeDefined();
+    }
   });
 });
 

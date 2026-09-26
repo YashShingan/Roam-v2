@@ -425,41 +425,30 @@ export function deriveStopPriceInfo(exp: {
     };
   }
 
-  if (exp.pricePerPerson !== undefined && exp.pricePerPerson !== null && !exp.priceIsEstimate) {
-    const val = Math.round(exp.pricePerPerson);
-    return {
-      priceBasis: val === 0 ? "Free entry" : `~₹${val} pp`,
-      priceMin: val,
-      priceMax: val,
-      pricePerPerson: val,
-      isCategoryTypical: false,
-    };
-  }
-
-  if (exp.category && CATEGORY_TYPICAL_PRICES[exp.category]) {
-    const bracket = CATEGORY_TYPICAL_PRICES[exp.category];
-    return {
-      priceBasis: bracket.basis,
-      priceMin: bracket.min,
-      priceMax: bracket.max,
-      pricePerPerson: Math.round((bracket.min + bracket.max) / 2),
-      isCategoryTypical: true,
-    };
-  }
-
   if (exp.pricePerPerson !== undefined && exp.pricePerPerson !== null) {
     const val = Math.round(exp.pricePerPerson);
-    return {
-      priceBasis: val === 0 ? "Free entry" : `~₹${val} pp (est.)`,
-      priceMin: val,
-      priceMax: val,
-      pricePerPerson: val,
-      isCategoryTypical: false,
-    };
+    if (val === 0) {
+      return {
+        priceBasis: "Free entry",
+        priceMin: 0,
+        priceMax: 0,
+        pricePerPerson: 0,
+        isCategoryTypical: false,
+      };
+    }
+    if (!exp.priceIsEstimate) {
+      return {
+        priceBasis: `~₹${val} pp`,
+        priceMin: val,
+        priceMax: val,
+        pricePerPerson: val,
+        isCategoryTypical: false,
+      };
+    }
   }
 
   return {
-    priceBasis: "Varies — no reliable signal",
+    priceBasis: "Varies on site",
     priceMin: undefined,
     priceMax: undefined,
     pricePerPerson: undefined,

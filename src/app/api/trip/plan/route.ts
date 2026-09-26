@@ -30,6 +30,9 @@ const Body = z.object({
       placeId: z.string().optional(),
     })
     .optional(),
+  includeBreakfast: z.boolean().optional(),
+  includeLunch: z.boolean().optional(),
+  includeDinner: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -70,6 +73,9 @@ export async function POST(req: Request) {
       transportMode: body.transportMode,
       timeMode: body.timeMode,
       startAnchor: body.startAnchor,
+      includeBreakfast: body.includeBreakfast,
+      includeLunch: body.includeLunch,
+      includeDinner: body.includeDinner,
     });
     await saveTrip(plan);
     return NextResponse.json({ plan });

@@ -257,6 +257,9 @@ export default function Home() {
             transportMode: req.transportMode,
             timeMode: req.timeMode,
             startAnchor: req.startAnchor,
+            includeBreakfast: req.includeBreakfast,
+            includeLunch: req.includeLunch,
+            includeDinner: req.includeDinner,
           }),
         });
         const j = (await res.json()) as { plan?: TripPlan; error?: string };

@@ -331,7 +331,10 @@ export function recomputePlanMetrics(
 
   for (let dIdx = 0; dIdx < next.days.length; dIdx++) {
     const day = next.days[dIdx];
-    let clock = 9 * 60; // 09:00 AM
+    const firstIsBreakfast =
+      day.stops[0]?.category === "food" &&
+      (next.includeBreakfast || day.stops[0]?.timeOfDay === "breakfast");
+    let clock = firstIsBreakfast ? 8 * 60 + 30 : 9 * 60; // 08:30 AM if breakfast stop, else 09:00 AM
     let dayTravelMin = 0;
     let dayDistKm = 0;
 
@@ -393,11 +396,11 @@ export function recomputePlanMetrics(
         const startH = Math.floor(start / 60);
         let tod = "afternoon";
         if (startH < 11 && s.category === "food") tod = "breakfast";
-        else if (startH < 12) tod = "morning";
-        else if (startH >= 12 && startH < 15 && s.category === "food") tod = "lunch";
+        else if (startH < 12 && s.category !== "food") tod = "morning";
+        else if (startH >= 11 && startH < 16 && s.category === "food") tod = "lunch";
         else if (startH >= 12 && startH < 17) tod = "afternoon";
         else if (startH >= 17 && startH < 19) tod = "sunset";
-        else if (startH >= 19 && s.category === "food") tod = "dinner";
+        else if (startH >= 18 && s.category === "food") tod = "dinner";
         else if (startH >= 19) tod = "evening";
         s.timeOfDay = tod;
       }
@@ -603,71 +606,125 @@ export async function buildTripPlan(places: Experience[], req: PlanRequest): Pro
       ? 6
       : Math.max(2, Math.min(8, Math.floor(req.hoursPerDay / 1.3)));
 
-  // Pick top candidates (always keeping any locked/liked stops first)
-  const selectedCandidates: ScoredPlace[] = [];
-  const usedIds = new Set<string>();
+  const foodPool = scorePlaces(
+    places.filter((p) => p.category === "food" && !excludedSet.has(p.id)),
+    req,
+  );
+  const sightsPool = pool.filter((s) => s.exp.category !== "food");
 
-  for (const s of pool) {
-    if (lockedSet.has(s.exp.id) && !usedIds.has(s.exp.id)) {
-      selectedCandidates.push(s);
-      usedIds.add(s.exp.id);
-    }
-  }
+  const wantBreakfast = !!req.includeBreakfast;
+  const wantLunch = !!req.includeLunch;
+  const wantDinner = !!req.includeDinner;
+  const hasMealAnchors = wantBreakfast || wantLunch || wantDinner;
+
+  const usedFoodIds = new Set<string>();
+  const pickFoodNear = (targetLat: number, targetLon: number): ScoredPlace | null => {
+    if (foodPool.length === 0) return null;
+    const unused = foodPool.filter((f) => !usedFoodIds.has(f.exp.id));
+    const candidates = unused.length > 0 ? unused : foodPool;
+    const sorted = [...candidates].sort((a, b) => {
+      const distA = haversineKm(targetLat, targetLon, a.exp.lat ?? targetLat, a.exp.lon ?? targetLon);
+      const distB = haversineKm(targetLat, targetLon, b.exp.lat ?? targetLat, b.exp.lon ?? targetLon);
+      return distA - distB;
+    });
+    const picked = sorted[0];
+    if (picked) usedFoodIds.add(picked.exp.id);
+    return picked ?? null;
+  };
+
+  // Partition sights across days
+  const sightsBuckets: ScoredPlace[][] = Array.from({ length: req.days }, () => []);
+  const sightsPerDay = timeMode === "recommended"
+    ? 4
+    : Math.max(2, Math.min(6, Math.floor(req.hoursPerDay / 1.8)));
 
   if (hasExplicitSelection) {
-    for (const s of pool) {
-      if (!usedIds.has(s.exp.id)) {
-        selectedCandidates.push(s);
-        usedIds.add(s.exp.id);
-      }
+    if (req.days === 1) {
+      sightsBuckets[0] = pool;
+    } else {
+      const withAngle = pool.map((c) => {
+        const dLat = (c.exp.lat ?? anchor.lat) - anchor.lat;
+        const dLon = (c.exp.lon ?? anchor.lon) - anchor.lon;
+        return { c, angle: Math.atan2(dLat, dLon) };
+      });
+      withAngle.sort((a, b) => a.angle - b.angle);
+      withAngle.forEach((item, idx) => {
+        const bIdx = Math.min(req.days - 1, Math.floor((idx / Math.max(withAngle.length, 1)) * req.days));
+        sightsBuckets[bIdx].push(item.c);
+      });
+    }
+  } else if (sightsPool.length > 0) {
+    if (req.days === 1) {
+      sightsBuckets[0] = sightsPool.slice(0, sightsPerDay);
+    } else {
+      const topSights = sightsPool.slice(0, req.days * sightsPerDay);
+      const withAngle = topSights.map((c) => {
+        const dLat = (c.exp.lat ?? anchor.lat) - anchor.lat;
+        const dLon = (c.exp.lon ?? anchor.lon) - anchor.lon;
+        return { c, angle: Math.atan2(dLat, dLon) };
+      });
+      withAngle.sort((a, b) => a.angle - b.angle);
+      withAngle.forEach((item, idx) => {
+        const bIdx = Math.min(req.days - 1, Math.floor((idx / Math.max(withAngle.length, 1)) * req.days));
+        sightsBuckets[bIdx].push(item.c);
+      });
     }
   } else {
-    // Seed from anchor outward so the selected set is geographically coherent
-    const foodTop = allowFoodAnchors ? pool.filter((s) => s.exp.category === "food").slice(0, req.days * 2) : [];
-    const rest = pool.filter((s) => !foodTop.includes(s));
-    const foods = [...foodTop];
-    const targetTotal = req.days * maxStopsPerDay;
-
-    while ((rest.length > 0 || foods.length > 0) && selectedCandidates.length < targetTotal) {
-      if (allowFoodAnchors && selectedCandidates.length % 3 === 2 && foods.length > 0) {
-        const f = foods.shift();
-        if (f && !usedIds.has(f.exp.id)) {
-          selectedCandidates.push(f);
-          usedIds.add(f.exp.id);
-        }
-      } else {
-        const r = rest.shift();
-        if (r && !usedIds.has(r.exp.id)) {
-          selectedCandidates.push(r);
-          usedIds.add(r.exp.id);
-        }
-      }
+    // If no non-food sights (pure food tour)
+    if (req.days === 1) {
+      sightsBuckets[0] = pool.slice(0, maxStopsPerDay);
+    } else {
+      const topPlaces = pool.slice(0, req.days * maxStopsPerDay);
+      const withAngle = topPlaces.map((c) => {
+        const dLat = (c.exp.lat ?? anchor.lat) - anchor.lat;
+        const dLon = (c.exp.lon ?? anchor.lon) - anchor.lon;
+        return { c, angle: Math.atan2(dLat, dLon) };
+      });
+      withAngle.sort((a, b) => a.angle - b.angle);
+      withAngle.forEach((item, idx) => {
+        const bIdx = Math.min(req.days - 1, Math.floor((idx / Math.max(withAngle.length, 1)) * req.days));
+        sightsBuckets[bIdx].push(item.c);
+      });
     }
-  }
-
-  // 2. Partition candidates across days by angular sector around anchor, then run 2-Opt TSP per day
-  const dayBuckets: ScoredPlace[][] = Array.from({ length: req.days }, () => []);
-  if (req.days === 1) {
-    dayBuckets[0] = selectedCandidates;
-  } else {
-    const withAngle = selectedCandidates.map((c) => {
-      const dLat = (c.exp.lat ?? anchor.lat) - anchor.lat;
-      const dLon = (c.exp.lon ?? anchor.lon) - anchor.lon;
-      return { c, angle: Math.atan2(dLat, dLon) };
-    });
-    withAngle.sort((a, b) => a.angle - b.angle);
-    withAngle.forEach((item, idx) => {
-      const bIdx = Math.min(req.days - 1, Math.floor((idx / Math.max(withAngle.length, 1)) * req.days));
-      dayBuckets[bIdx].push(item.c);
-    });
   }
 
   const tripDays: TripDay[] = [];
   const goldenNotes: string[] = [];
 
   for (let d = 0; d < req.days; d++) {
-    // Optimize route order for Day d using Nearest-Neighbor + 2-Opt from anchor
-    let dayCandidates = optimizeDayRoute(dayBuckets[d], anchor);
+    // Optimize route order for Day d's sights using Nearest-Neighbor + 2-Opt from anchor
+    const orderedSights = optimizeDayRoute(sightsBuckets[d], anchor);
+
+    let dayCandidates: ScoredPlace[] = [];
+    if (!hasExplicitSelection && hasMealAnchors && foodPool.length > 0 && sightsPool.length > 0) {
+      let breakfastPlace: ScoredPlace | null = null;
+      let lunchPlace: ScoredPlace | null = null;
+      let dinnerPlace: ScoredPlace | null = null;
+
+      if (wantBreakfast) {
+        breakfastPlace = pickFoodNear(anchor.lat, anchor.lon);
+      }
+      if (wantLunch) {
+        const midSight = orderedSights[Math.floor(orderedSights.length / 2)] ?? orderedSights[0];
+        lunchPlace = pickFoodNear(midSight?.exp.lat ?? anchor.lat, midSight?.exp.lon ?? anchor.lon);
+      }
+      if (wantDinner) {
+        const lastSight = orderedSights[orderedSights.length - 1] ?? orderedSights[0];
+        dinnerPlace = pickFoodNear(lastSight?.exp.lat ?? anchor.lat, lastSight?.exp.lon ?? anchor.lon);
+      }
+
+      if (breakfastPlace) dayCandidates.push(breakfastPlace);
+      const midSplit = Math.max(1, Math.ceil(orderedSights.length / 2));
+      const morningSights = orderedSights.slice(0, midSplit);
+      const afternoonSights = orderedSights.slice(midSplit);
+
+      dayCandidates.push(...morningSights);
+      if (lunchPlace) dayCandidates.push(lunchPlace);
+      dayCandidates.push(...afternoonSights);
+      if (dinnerPlace) dayCandidates.push(dinnerPlace);
+    } else {
+      dayCandidates = orderedSights;
+    }
 
     // If capped time mode and not explicit hand-picked selection, trim to fit dayCapacityMin
     if (timeMode === "capped" && !hasExplicitSelection) {
