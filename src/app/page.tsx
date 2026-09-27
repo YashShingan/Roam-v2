@@ -21,6 +21,8 @@ import { ProviderModal } from "@/components/provider-modal";
 import { recomputePlanMetrics } from "@/lib/planner";
 import { deriveStopPriceInfo } from "@/lib/price-engine";
 import { adaptPlanForWeather, trimPlanForLateRunning } from "@/lib/circumstance-adapter";
+import { useTwinStore } from "@/lib/twin-store";
+import { speakWithCoordination } from "@/lib/voice-utils";
 import {
   Attribution,
   HealthDrawer,
@@ -274,11 +276,8 @@ export default function Home() {
         setPlan(j.plan);
         setPlanOpen(true);
         toast.success(`Route ready — ${j.plan.days.reduce((a, d) => a + d.stops.length, 0)} stops`);
-        if ("speechSynthesis" in window && j.plan.voiceSummary && !voiceOpen) {
-          speechSynthesis.cancel();
-          const u = new SpeechSynthesisUtterance(j.plan.voiceSummary.slice(0, 320));
-          u.lang = "en-IN";
-          speechSynthesis.speak(u);
+        if (j.plan.voiceSummary && !voiceOpen) {
+          speakWithCoordination(j.plan.voiceSummary.slice(0, 320), "en-IN");
         }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Planning failed");
@@ -596,11 +595,8 @@ export default function Home() {
           }
           case "read_day_plan": {
             setPlanOpen(true);
-            if (plan?.voiceSummary && "speechSynthesis" in window) {
-              const u = new SpeechSynthesisUtterance(plan.voiceSummary);
-              u.lang = "en-IN";
-              speechSynthesis.cancel();
-              speechSynthesis.speak(u);
+            if (plan?.voiceSummary) {
+              speakWithCoordination(plan.voiceSummary, "en-IN");
             }
             break;
           }
@@ -656,6 +652,15 @@ export default function Home() {
             } else {
               toast.message("Schedule reslotted for delay.");
             }
+            break;
+          }
+          case "twin_simulate": {
+            useTwinStore.setState({
+              isOpen: true,
+              scenario: { precipMm: a.rainMm ?? 25, tempC: 24, windKmh: 15 },
+            });
+            setPlanOpen(true);
+            toast.info(`Opened Digital Twin Simulator with ${a.rainMm ?? 25} mm/hr rain scenario!`);
             break;
           }
           case "add_stop":
@@ -937,11 +942,8 @@ export default function Home() {
         onReadPlan={() => {
           setVoiceOpen(false);
           setPlanOpen(true);
-          if (plan?.voiceSummary && "speechSynthesis" in window) {
-            const u = new SpeechSynthesisUtterance(plan.voiceSummary);
-            u.lang = "en-IN";
-            speechSynthesis.cancel();
-            speechSynthesis.speak(u);
+          if (plan?.voiceSummary) {
+            speakWithCoordination(plan.voiceSummary, "en-IN");
           }
         }}
       />

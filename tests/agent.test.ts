@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { adaptPlanForWeather, trimPlanForLateRunning, isOutdoorExperience, isCoveredIndoorExperience } from "@/lib/circumstance-adapter";
-import { matchesWakeWord, cleanVoiceTranscript } from "@/lib/voice-utils";
+import { matchesWakeWord, cleanVoiceTranscript, extractWakeCommand } from "@/lib/voice-utils";
 import type { Experience, TripPlan } from "@/lib/types";
 
 function makeExp(overrides: Partial<Experience> & { id: string; name: string; category: Experience["category"] }): Experience {
@@ -144,11 +144,37 @@ describe("Circumstance Adapter & Agent Replanning", () => {
     expect(result.plan.feasibility?.message).toContain("delay recovered");
   });
 
-  it("detects hands-free wake words accurately", () => {
+  it("detects hands-free wake words accurately across Indian accent variants", () => {
     expect(matchesWakeWord("Hey Vibe, plan a 2-day trip to Pune")).toBe(true);
     expect(matchesWakeWord("hey roamy show me cultural places")).toBe(true);
     expect(matchesWakeWord("ok vibe what is the sunset time")).toBe(true);
+    expect(matchesWakeWord("hey bhai plan a food trip")).toBe(true);
+    expect(matchesWakeWord("hai vibe")).toBe(true);
+    expect(matchesWakeWord("heavy plan a trip")).toBe(true);
+    expect(matchesWakeWord("hey roomie what's good")).toBe(true);
     expect(matchesWakeWord("just showing regular search")).toBe(false);
+  });
+
+  it("extracts one-shot wake commands in the same breath and preserves the command", () => {
+    const res1 = extractWakeCommand("Hey Vibe, plan a 2-day trip to Pune");
+    expect(res1.hasWake).toBe(true);
+    expect(res1.command).toBe("plan a 2-day trip to Pune");
+
+    const res2 = extractWakeCommand("hey roamy: swap Day 1 breakfast with Day 2 that's it");
+    expect(res2.hasWake).toBe(true);
+    expect(res2.command).toBe("swap Day 1 breakfast with Day 2");
+
+    const res3 = extractWakeCommand("hey vibe");
+    expect(res3.hasWake).toBe(true);
+    expect(res3.command).toBe("");
+
+    const res4 = extractWakeCommand("hey bhai find authentic misal pav in Pune");
+    expect(res4.hasWake).toBe(true);
+    expect(res4.command).toBe("find authentic misal pav in Pune");
+
+    const res5 = extractWakeCommand("plan a trip to mumbai");
+    expect(res5.hasWake).toBe(false);
+    expect(res5.command).toBe("");
   });
 
   it("detects trailing verbal stop phrases and cleanly extracts the core travel prompt", () => {
@@ -499,3 +525,113 @@ describe("Circumstance Adapter & Agent Replanning", () => {
     expect(reslotted.days[1].stops[1].name).toBe("Aga Khan Palace");
   });
 });
+
+describe("Voice Utilities: Wake Word Spotting, Barge-In & Roamy Phonetics", () => {
+  it("comprehensively recognizes 'Hey Roamy' and its phonetic variants", () => {
+    const roamyVariants = [
+      "hey roamy",
+      "Hey Roamy",
+      "hey romy",
+      "hey romi",
+      "hey roami",
+      "hey roomie",
+      "hey romey",
+      "hey roam",
+      "hey rome",
+      "hey romeo",
+      "ok roamy",
+      "ok roam",
+      "hi roamy",
+      "hai roamy",
+      "aye roamy",
+      "hero me",
+      "hear me roam",
+      "roamy",
+      "roomie",
+      "roomi",
+      "roami",
+      "romy",
+      "hey roamit",
+      "roamit",
+      "hey rumi",
+      "rumi",
+      "hi rumi",
+      "ok rumi",
+      "hey rohit",
+      "roam it",
+      "hey roam it",
+    ];
+
+    for (const variant of roamyVariants) {
+      expect(matchesWakeWord(variant), `Expected '${variant}' to match wake word`).toBe(true);
+    }
+  });
+
+  it("comprehensively recognizes 'Hey Vibe' and its phonetic variants", () => {
+    const vibeVariants = [
+      "hey vibe",
+      "Hey Vibe",
+      "hay vibe",
+      "hai vibe",
+      "hi vibe",
+      "oye vibe",
+      "ay vibe",
+      "ok vibe",
+      "hey bhai",
+      "heavy",
+      "hey five",
+      "hey wipe",
+      "hey vive",
+      "high vibe",
+    ];
+
+    for (const variant of vibeVariants) {
+      expect(matchesWakeWord(variant), `Expected '${variant}' to match wake word`).toBe(true);
+    }
+  });
+
+  it("prevents self-trigger by rejecting bare 'vibe' in assistant sentences", () => {
+    const assistantPhrases = [
+      "I've crafted an itinerary with a cultural vibe for your trip",
+      "The vibe at Cafe Goodluck is wonderful in the morning",
+      "You can choose a relaxed vibe or an adventurous one",
+    ];
+
+    for (const phrase of assistantPhrases) {
+      expect(matchesWakeWord(phrase), `Expected assistant phrase '${phrase}' NOT to trigger wake word`).toBe(false);
+    }
+  });
+
+  it("extracts one-shot trailing commands accurately across Roamy and Vibe triggers", () => {
+    // Roamy one-shot
+    const r1 = extractWakeCommand("Hey Roamy, plan a 2-day trip to Pune");
+    expect(r1.hasWake).toBe(true);
+    expect(r1.command).toBe("plan a 2-day trip to Pune");
+
+    // Hero me phonetic one-shot
+    const r2 = extractWakeCommand("hero me, show me heritage places");
+    expect(r2.hasWake).toBe(true);
+    expect(r2.command).toBe("show me heritage places");
+
+    // Roomie standalone one-shot
+    const r3 = extractWakeCommand("roomie, adapt to rain that's it");
+    expect(r3.hasWake).toBe(true);
+    expect(r3.command).toBe("adapt to rain");
+
+    // Hey Vibe barge-in command
+    const r4 = extractWakeCommand("Hey Vibe, stop and switch to Mumbai");
+    expect(r4.hasWake).toBe(true);
+    expect(r4.command).toBe("stop and switch to Mumbai");
+
+    // Wake word only
+    const r5 = extractWakeCommand("Hey Roamy");
+    expect(r5.hasWake).toBe(true);
+    expect(r5.command).toBe("");
+
+    // Non wake text
+    const r6 = extractWakeCommand("Plan a trip to Pune");
+    expect(r6.hasWake).toBe(false);
+    expect(r6.command).toBe("");
+  });
+});
+

@@ -85,3 +85,99 @@ export async function getWeather(lat: number, lon: number): Promise<WeatherInfo>
     };
   });
 }
+
+export interface WeatherHourlyItem {
+  time: string;
+  tempC: number;
+  apparentC: number;
+  precipMm: number;
+  precipProb: number;
+  windKmh: number;
+  code: number;
+  uvIndex?: number;
+}
+
+export interface WeatherDailyItem {
+  date: string;
+  maxTempC: number;
+  minTempC: number;
+  totalPrecipMm: number;
+  maxWindKmh: number;
+  dominantCode: number;
+}
+
+export interface WeatherVector extends WeatherInfo {
+  hourlyForecast: WeatherHourlyItem[];
+  dailyForecast: WeatherDailyItem[];
+}
+
+export async function getWeatherVector(lat: number, lon: number): Promise<WeatherVector> {
+  return cached(`weather-vector:${lat.toFixed(2)}:${lon.toFixed(2)}`, async () => {
+    const base = await getWeather(lat, lon);
+    const j = await cached(`open-meteo-extended:${lat.toFixed(2)}:${lon.toFixed(2)}`, async () => {
+      const res = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,apparent_temperature,precipitation,precipitation_probability,weather_code,wind_speed_10m,uv_index&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,weather_code&forecast_days=7&timezone=auto`,
+        { signal: AbortSignal.timeout(12000) },
+      );
+      if (!res.ok) throw new Error(`Open-Meteo Extended HTTP ${res.status}`);
+      return (await res.json()) as {
+        hourly?: {
+          time: string[];
+          temperature_2m: number[];
+          apparent_temperature: number[];
+          precipitation: number[];
+          precipitation_probability: number[];
+          weather_code: number[];
+          wind_speed_10m: number[];
+          uv_index: number[];
+        };
+        daily?: {
+          time: string[];
+          temperature_2m_max: number[];
+          temperature_2m_min: number[];
+          precipitation_sum: number[];
+          wind_speed_10m_max: number[];
+          weather_code: number[];
+        };
+      };
+    });
+
+    const hourly: WeatherHourlyItem[] = [];
+    if (j.hourly && Array.isArray(j.hourly.time)) {
+      const len = Math.min(j.hourly.time.length, 48); // next 48 hours
+      for (let i = 0; i < len; i++) {
+        hourly.push({
+          time: j.hourly.time[i],
+          tempC: Math.round(j.hourly.temperature_2m[i] ?? base.tempC),
+          apparentC: Math.round(j.hourly.apparent_temperature[i] ?? base.apparentC),
+          precipMm: j.hourly.precipitation[i] ?? 0,
+          precipProb: j.hourly.precipitation_probability[i] ?? 0,
+          windKmh: Math.round(j.hourly.wind_speed_10m[i] ?? base.windKmh),
+          code: j.hourly.weather_code[i] ?? base.code,
+          uvIndex: j.hourly.uv_index ? Math.round(j.hourly.uv_index[i] ?? 0) : undefined,
+        });
+      }
+    }
+
+    const daily: WeatherDailyItem[] = [];
+    if (j.daily && Array.isArray(j.daily.time)) {
+      for (let i = 0; i < j.daily.time.length; i++) {
+        daily.push({
+          date: j.daily.time[i],
+          maxTempC: Math.round(j.daily.temperature_2m_max[i] ?? base.tempC),
+          minTempC: Math.round(j.daily.temperature_2m_min[i] ?? base.tempC - 5),
+          totalPrecipMm: j.daily.precipitation_sum[i] ?? 0,
+          maxWindKmh: Math.round(j.daily.wind_speed_10m_max[i] ?? base.windKmh),
+          dominantCode: j.daily.weather_code[i] ?? base.code,
+        });
+      }
+    }
+
+    return {
+      ...base,
+      hourlyForecast: hourly,
+      dailyForecast: daily,
+    };
+  });
+}
+

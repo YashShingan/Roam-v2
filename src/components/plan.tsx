@@ -58,6 +58,9 @@ import {
 } from "@/lib/circumstance-adapter";
 import { Button, Modal, Slider, cn, SPRING } from "./ui";
 import { CATEGORY_EMOJI } from "./cards";
+import { DigitalTwinPanel } from "./digital-twin-panel";
+import { useTwinStore } from "@/lib/twin-store";
+import { notifySpeechStart, notifySpeechEnd } from "@/lib/voice-utils";
 
 const EmbeddedRouteMap = dynamic(() => import("./map").then((m) => m.MapView), {
   ssr: false,
@@ -131,6 +134,8 @@ export function PlanSheet({
   const savedIds = useRoam((s) => s.saved);
   const lang = useRoam((s) => s.lang);
   const t = (k: DictKey) => translate(lang, k);
+  const twinOpen = useTwinStore((s) => s.isOpen);
+  const setTwinOpen = useTwinStore((s) => s.setOpen);
 
   const [dayIdx, setDayIdx] = useState(0);
   const [hours, setHours] = useState(plan ? Math.max(2, Math.min(15, Math.round(plan.days[0]?.totalHours ?? 8))) : 8);
@@ -938,11 +943,20 @@ export function PlanSheet({
     if (speakingRef.current) {
       speechSynthesis.cancel();
       speakingRef.current = false;
+      notifySpeechEnd();
       return;
     }
+    notifySpeechStart();
     const u = new SpeechSynthesisUtterance(plan.voiceSummary);
     u.lang = lang === "hi" ? "hi-IN" : lang === "mr" ? "mr-IN" : "en-IN";
-    u.onend = () => (speakingRef.current = false);
+    u.onend = () => {
+      speakingRef.current = false;
+      notifySpeechEnd();
+    };
+    u.onerror = () => {
+      speakingRef.current = false;
+      notifySpeechEnd();
+    };
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
     speakingRef.current = true;
@@ -1221,6 +1235,18 @@ export function PlanSheet({
                   <span>Voice</span>
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setTwinOpen(!twinOpen)}
+                className={cn(
+                  "clay-raised-sm inline-flex items-center gap-1 rounded-lg px-2.5 py-1 font-semibold transition-colors",
+                  twinOpen ? "bg-amber-500/20 text-amber-600 dark:text-amber-400" : "text-primary hover:bg-primary/10",
+                )}
+                title="Weather Digital Twin What-If Simulator"
+              >
+                <Sparkles size={11} className="text-amber-500" />
+                <span>Twin</span>
+              </button>
               <button
                 onClick={() => setShowPlaceSelector((v) => !v)}
                 className={cn(
@@ -2075,6 +2101,11 @@ export function PlanSheet({
           </div>
         </Modal>
       )}
+      <DigitalTwinPanel
+        onAcceptSimulation={(simPlan) => {
+          useRoam.setState({ plan: simPlan });
+        }}
+      />
     </Modal>
   );
 }

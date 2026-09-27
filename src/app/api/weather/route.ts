@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getWeather } from "@/lib/weather";
+import { getWeather, getWeatherVector } from "@/lib/weather";
 
 export const dynamic = "force-dynamic";
 
@@ -8,8 +8,13 @@ export async function GET(req: Request) {
     const sp = new URL(req.url).searchParams;
     const lat = Number(sp.get("lat"));
     const lon = Number(sp.get("lon"));
+    const mode = sp.get("mode");
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       return NextResponse.json({ error: "lat & lon required" }, { status: 400 });
+    }
+    if (mode === "twin") {
+      const vector = await getWeatherVector(lat, lon);
+      return NextResponse.json(vector);
     }
     const weather = await getWeather(lat, lon);
     return NextResponse.json(weather);

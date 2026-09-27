@@ -1,24 +1,25 @@
 # Product Requirements Document (PRD)
-# Roam v2: Autonomous Agentic Travel Planner & Voice Copilot
+# Roam v3: Autonomous Travel Planner, Voice Copilot & Weather-Driven Digital Twin
 
-**Document Version:** 3.0  
+**Document Version:** 3.1  
 **Status:** Implemented & Verified in Production  
-**Scope:** Complete System Specification — Core Data Pipeline, Route Optimization Engine, Deterministic Mutation Layer, Voice Architecture ("Hey Vibe" / "Hey Roamy"), UI/UX Cockpit, and API Endpoints  
+**Scope:** Complete System Specification — Core Data Pipeline, Route Optimization Engine, Deterministic Mutation Layer, Voice Architecture ("Hey Vibe" / "Hey Roamy"), Weather-Driven Digital Twin Simulation, Nugen Domain-Aligned AI, UI/UX Cockpit, and API Endpoints  
 **Target Environment:** 100% Free & Open-Source Stack, Serverless Edge-Compatible, Next.js 16 (App Router + Turbopack)
 
 ---
 
 ## 1. Executive Summary & Vision
 
-**Roam v2** is a hyper-local, autonomous AI travel planner and conversational voice assistant engineered specifically for Indian destinations, culture, transit, and pacing. 
+**Roam v3** is a hyper-local, autonomous AI travel planner, conversational voice assistant, and weather-driven digital twin engine engineered specifically for Indian destinations, culture, transit, and pacing. 
 
-Traditional travel planners rely on expensive closed APIs (Google Maps Platform, OpenAI Realtime, paid weather feeds), impose rigid multi-step form questionnaires, produce hallucinated routes that ignore Indian traffic conditions, and lack contextual voice interaction.
+Traditional travel planners rely on expensive closed APIs (Google Maps Platform, OpenAI Realtime, paid weather feeds), impose rigid multi-step form questionnaires, produce hallucinated routes that ignore Indian traffic conditions, lack contextual voice interaction, and break when sudden monsoon rains or transit strikes occur.
 
 Roam replaces this model with a **100% free, keyless, open-source stack**:
 1. **Intelligent Route Optimization:** Generates realistic 1- to 7-day itineraries powered by 2-Opt Traveling Salesperson Problem (TSP) heuristics, regional meal anchoring, biological fatigue buffering for treks, and honest pricing signals.
 2. **Conversational Voice Assistant ("Hey Vibe" / "Hey Roamy"):** A hands-free voice loop featuring continuous wake-word spotting, dual smart stop detection (in-browser VAD + verbal trigger), sub-second Groq Whisper STT with Indian entity prompting, agentic tool-calling NLU with active itinerary context injection, and natural Microsoft Edge Neural TTS in Indian English, Hindi, and Marathi.
 3. **Deterministic Mutation Engine:** Allows travelers to reorder, move, or swap stops across days via natural voice commands without hallucinating new trips or corrupting scheduled timings.
-4. **Interactive Planner Cockpit:** An adaptive interface offering a side drawer and a maximized two-column command center with interactive MapLibre GL routing, live weather radars, and print/export readiness.
+4. **Weather-Driven Digital Twin & Domain-Aligned AI (Nugen):** A real-time what-if simulation engine that runs counterfactual stress-tests on shadow copies of itineraries under rain (0–45 mm/hr), extreme heat, or transit disruptions, computing casualty cascades, transit mode shifts (Pune/Mumbai Metro), and shelter substitutions with Nugen causal intelligence.
+5. **Interactive Planner Cockpit:** An adaptive interface offering a side drawer, a maximized two-column command center with interactive MapLibre GL routing, live weather radars, digital twin drawer, and print/export readiness.
 
 ---
 
@@ -45,9 +46,9 @@ Roam replaces this model with a **100% free, keyless, open-source stack**:
 │  • @dnd-kit (Accessible Drag-and-Drop Itinerary Stop Reordering)                     │
 └──────────────────────────────────────────┬───────────────────────────────────────────┘
                                            │
-                                 STATE & STORAGE LAYER
+                                  STATE & STORAGE LAYER
 ┌──────────────────────────────────────────┴───────────────────────────────────────────┐
-│  • Zustand Client Store (`useRoam`) with LocalStorage Persistence                    │
+│  • Zustand Client Stores (`useRoam` & `twinStore`) with LocalStorage Persistence     │
 │  • Local SQLite Embedded Database (`src/lib/db.ts`) for Crawl & Trip Caching         │
 │  • Web App Manifest (`manifest.webmanifest`) for PWA Offline Readiness               │
 └──────────────────────────────────────────┬───────────────────────────────────────────┘
@@ -62,12 +63,21 @@ Roam replaces this model with a **100% free, keyless, open-source stack**:
 │  5. Text-to-Speech: Microsoft Edge Neural TTS (/api/voice/tts) + Browser Synth       │
 └──────────────────────────────────────────┬───────────────────────────────────────────┘
                                            │
-                     PLANNING, ROUTING & DATA ENGINE LAYER
+                   DIGITAL TWIN & DOMAIN-ALIGNED AI (NUGEN) LAYER
+┌──────────────────────────────────────────┴───────────────────────────────────────────┐
+│  • Nugen Domain Client (`src/lib/nugen-client.ts`): Causal inference for Indian rain │
+│  • Digital Twin Simulator (`src/lib/digital-twin.ts`): Shadow copy stress-testing   │
+│  • Weather Impact Matrix (`src/lib/weather-impact.ts`): Exposure (indoor/semi/out)  │
+│  • Transit Engine (`src/lib/transit-engine.ts`): Pune/Mumbai Metro line mapping      │
+│  • Social Signals (`src/lib/social-signals.ts`): Travel disruption alerts & sentiment│
+└──────────────────────────────────────────┬───────────────────────────────────────────┘
+                                           │
+                      PLANNING, ROUTING & DATA ENGINE LAYER
 ┌──────────────────────────────────────────┴───────────────────────────────────────────┐
 │  • Places Crawler: Overpass API / OpenStreetMap + Wikipedia API Content              │
 │  • Routing & Transit: OSRM Foot & Car Engines with Realistic Urban Transit Speeds    │
 │  • Route Optimization: 2-Opt TSP Solver with Meal Anchoring & Biological Buffers     │
-│  • Weather & Sun: Open-Meteo API (Temperature, Rain, Golden Hour Sunset Radar)      │
+│  • Weather & Sun: Open-Meteo API (48h WeatherVector, Rain, Sunset Radar)             │
 │  • Honest Pricing: Pattern-based extraction with verified quotes & zero fake tiers   │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -251,6 +261,12 @@ Instead of re-running full trip generation when a user modifies their schedule, 
 #### D. Place Comparison Tray & Sheet (`src/components/compare.tsx`)
 * Side-by-side comparison of up to 3 selected places across distance, duration, crowd warnings, open hours, and budget.
 
+#### E. Digital Twin Simulation Drawer (`src/components/digital-twin-panel.tsx`)
+* **Interactive What-If Sliders:** Real-time controls for Precipitation (0–45 mm/hr), Temperature (15–46°C), Wind (0–60 km/h), and Flood / Waterlogging toggles.
+* **Instant Shadow Simulation:** Triggers `/api/twin/simulate` using debounced slider updates without ever touching the active itinerary (`useRoam.plan`).
+* **Cascade & Impact Visualization:** Displays compromised outdoor stops, indoor sheltered replacements, metro transit mode shifts, walk distance delta, and Nugen domain AI rationales.
+* **One-Click Commit:** "Accept Simulation" button applies the simulated plan to the active trip and resets the shadow workspace.
+
 ---
 
 ## 5. API Endpoints Reference
@@ -260,11 +276,13 @@ Instead of re-running full trip generation when a user modifies their schedule, 
 | `POST` | `/api/assistant` | Multi-tier conversational agent with function calling. | **Body:** `{ transcript, sessionId, currentItinerary? }`<br>**Returns:** `{ actions: Action[], reply: string, nlu: string }` |
 | `POST` | `/api/trip/plan` | 2-Opt TSP itinerary generator. | **Body:** `{ city, days, hoursPerDay, vibe, persona, includeBreakfast, includeLunch, includeDinner, startAnchor }`<br>**Returns:** `TripPlan` |
 | `POST` | `/api/trip/adapt` | Adapts active trip for weather or delays. | **Body:** `{ plan, action: "weather" \| "delay", condition?, delayMinutes? }`<br>**Returns:** `TripPlan` |
+| `POST` | `/api/twin/simulate` | Digital Twin counterfactual stress-test. | **Body:** `{ plan, scenario, weatherVector? }`<br>**Returns:** `{ simulatedPlan, diff, confidence, causalSummary, cascade }` |
+| `GET` | `/api/social/signals` | Traveler disruption alerts and sentiment. | **Query:** `city`<br>**Returns:** `{ city, signals: SocialDisruptionSignal[], summary }` |
 | `POST` | `/api/voice/transcribe` | Groq Whisper Large v3 STT. | **Body:** `FormData (file: audio blob)`<br>**Returns:** `{ text: string }` |
 | `POST` | `/api/voice/tts` | Microsoft Edge Neural TTS. | **Body:** `{ text: string, lang: "en" \| "hi" \| "mr" }`<br>**Returns:** MP3 audio binary stream |
 | `GET` | `/api/places` | Catalog search and filter. | **Query:** `city`, `categories`, `budget`, `openNow`<br>**Returns:** `Experience[]` |
 | `GET` | `/api/places/[id]/wiki` | Wikipedia content crawler. | **Query:** `name`<br>**Returns:** `{ extract, imageUrl, wikiUrl }` |
-| `GET` | `/api/weather` | Open-Meteo weather & sunset. | **Query:** `lat`, `lon`<br>**Returns:** `{ tempC, label, emoji, sunset }` |
+| `GET` | `/api/weather` | Open-Meteo weather & sunset (or 48h WeatherVector). | **Query:** `lat`, `lon`, `mode? ("twin")`<br>**Returns:** `{ tempC, label, emoji, sunset }` or `WeatherVector` |
 | `GET` | `/api/route` | OSRM routing geometry. | **Query:** `points`, `mode: "walk" \| "drive" \| "transit"`<br>**Returns:** `{ geometry, distanceKm, durationMin }` |
 | `GET` | `/api/trip/[id]` | Fetches shared trip. | **Returns:** `TripPlan` |
 | `POST` | `/api/trip/[id]/vote` | Submits upvote/downvote for a stop. | **Body:** `{ stopIndex, vote: 1 \| -1 }` |
@@ -290,14 +308,21 @@ Instead of re-running full trip generation when a user modifies their schedule, 
     * Hands-free wake spotters automatically re-arm on all turn completion paths (`audio.onended`, `u.onend`, error fallbacks).
     * Assistant NLU requests include active `currentItinerary` summaries to resolve relative semantic references.
     * Stop moves without explicit slot parameters default to category-appropriate slots (breakfast $\rightarrow$ morning index 0).
+14. **Digital Twin Shadow Copy & Simulation Isolation:**
+    * Counterfactual simulations (`simulateScenario`) must strictly operate on cloned shadow copies (`SimulatedTripPlan`), preserving meal anchors (Invariant 9), waking hours (Invariant 12), and the 7-stop cap.
+    * What-if slider interactions in the Digital Twin must remain isolated in `twinStore` and never mutate the active `useRoam.plan` unless explicitly confirmed via "Accept Simulation".
 
 ---
 
 ## 7. Quality Assurance & Test Verification
 
 ### 7.1 Automated Vitest Test Suite (`npm test -- --run`)
-* **Total Passing Tests:** 57 tests across 2 suites (`tests/agent.test.ts`, `tests/core.test.ts`).
+* **Total Passing Tests:** 63 tests across 3 suites (`tests/twin.test.ts`, `tests/agent.test.ts`, `tests/core.test.ts`).
 * **Covered Behaviors:**
+  * Digital Twin shadow copy isolation (active plan immutability).
+  * Weather impact exposure matrix (outdoor/semi-outdoor/indoor) and suitability scoring.
+  * Rainy day shelter substitution preserving meal anchors and waking hours.
+  * Metro transit corridor matching (Pune & Mumbai Metro) and feeder leg calculation.
   * Wake word regex detection and verbal stop phrase extraction.
   * Start anchor coordinate sanitization preventing `(0,0)` Null Island leaks.
   * Strict category isolation (e.g. `interests=['culture']` never injects food stops).
@@ -307,7 +332,7 @@ Instead of re-running full trip generation when a user modifies their schedule, 
   * Late-running compression trimming non-meal afternoon stops.
   * Two-way stop swapping (`swap_stops`) across days and intra-day.
   * Category-aware morning slot preservation for breakfast stops.
-  * Rule-based NLU parsing for `move_stop` and `swap_stops`.
+  * Rule-based NLU parsing for `move_stop`, `swap_stops`, and `twin_simulate`.
 
 ### 7.2 Production Turbopack Compilation (`npm run build`)
 * Zero TypeScript compilation errors (`tsc --noEmit`).

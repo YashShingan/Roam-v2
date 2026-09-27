@@ -93,6 +93,11 @@ const ActionSchema: z.ZodType<Action> = z.discriminatedUnion("type", [
   z.object({ type: z.literal("adapt_weather"), condition: z.enum(["rain", "heat"]) }),
   z.object({ type: z.literal("running_late"), delayMinutes: z.number().optional() }),
   z.object({
+    type: z.literal("twin_simulate"),
+    rainMm: z.number().optional(),
+    condition: z.string().optional(),
+  }),
+  z.object({
     type: z.literal("answer"),
     topic: z.enum(["weather", "best_time", "price", "crowd"]),
     about: z.string().optional(),
@@ -143,8 +148,8 @@ const AGENT_TOOLS = [
         properties: {
           action: {
             type: "string",
-            enum: ["add_stop", "remove_stop", "move_stop", "swap_stops", "adapt_weather", "running_late"],
-            description: "Action type: 'swap_stops' to exchange two stops, 'move_stop' to relocate an existing stop, 'add_stop' to add a place, 'remove_stop' to delete."
+            enum: ["add_stop", "remove_stop", "move_stop", "swap_stops", "adapt_weather", "running_late", "twin_simulate"],
+            description: "Action type: 'swap_stops' to exchange two stops, 'move_stop' to relocate an existing stop, 'add_stop' to add a place, 'remove_stop' to delete, 'twin_simulate' to run what-if weather simulation."
           },
           stopName: { type: "string", description: "Name of the place to add, remove, or move" },
           fromDay: { type: "integer", minimum: 1, maximum: 7, description: "Source day number (1-indexed) if moving" },
@@ -159,7 +164,8 @@ const AGENT_TOOLS = [
           stopB: { type: "string", description: "Second stop name if action is swap_stops" },
           dayB: { type: "integer", minimum: 1, maximum: 7, description: "Day number of second stop if action is swap_stops" },
           condition: { type: "string", enum: ["rain", "heat"], description: "Weather condition to adapt for" },
-          delayMinutes: { type: "integer", description: "Minutes running late to catch up (default 60)" }
+          delayMinutes: { type: "integer", description: "Minutes running late to catch up (default 60)" },
+          rainMm: { type: "integer", description: "Rain intensity in mm/hr for what-if digital twin simulation (e.g. 25)" }
         },
         required: ["action"]
       }
@@ -411,6 +417,12 @@ Never invent proprietary IDs. When user mentions places, specify them by name.`;
             actions.push({ type: "adapt_weather", condition: args.condition === "heat" ? "heat" : "rain" });
           } else if (act === "running_late") {
             actions.push({ type: "running_late", delayMinutes: Number(args.delayMinutes) || 60 });
+          } else if (act === "twin_simulate") {
+            const rainMm = typeof args.rainMm === "number" ? args.rainMm : 25;
+            actions.push({ type: "twin_simulate", rainMm, condition: typeof args.condition === "string" ? args.condition : "rain" });
+            if (!verbalReply) {
+              verbalReply = `Simulating what-if scenario with ${rainMm} mm/hr rain in the Digital Twin…`;
+            }
           }
           if (!verbalReply) {
             verbalReply = `Updating your itinerary accordingly.`;

@@ -268,6 +268,7 @@ export type Action =
   | { type: "navigate_to"; name: string }
   | { type: "adapt_weather"; condition: "rain" | "heat" }
   | { type: "running_late"; delayMinutes?: number }
+  | { type: "twin_simulate"; rainMm?: number; condition?: string }
   | { type: "answer"; topic: "weather" | "best_time" | "price" | "crowd"; about?: string };
 
 export interface AssistantResponse {

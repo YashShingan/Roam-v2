@@ -249,7 +249,10 @@ export async function parseTranscript(transcript: string, sessionId: string): Pr
     actions.push({ type: "navigate_to", name: navM[1].replace(/[.!?]+$/, "").trim() });
     replyParts.push("Opening directions.");
   }
-  if (/weather|rain|hot|cold|temperature/i.test(low)) {
+  if (/\b(?:what if it rains|simulate rain|weather simulation|digital twin|twin simulate)\b/i.test(low)) {
+    actions.push({ type: "twin_simulate", rainMm: 25, condition: "rain" });
+    replyParts.push("Launching Digital Twin simulation with rain scenario.");
+  } else if (/weather|rain|hot|cold|temperature/i.test(low)) {
     actions.push({ type: "answer", topic: "weather" });
     replyParts.push("Checking the sky for you.");
   } else if (/best time|when should|golden hour/i.test(low)) {

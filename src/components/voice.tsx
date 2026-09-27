@@ -8,7 +8,7 @@ import type { Action } from "@/lib/types";
 import { translate, type DictKey } from "@/lib/i18n";
 import { useRoam } from "@/lib/store";
 import { playDoneChime, playWakeChime } from "@/lib/audio-cue";
-import { cleanVoiceTranscript, matchesWakeWord } from "@/lib/voice-utils";
+import { cleanVoiceTranscript, extractWakeCommand, interruptAllSpeech, matchesWakeWord } from "@/lib/voice-utils";
 import { Button, Chip, cn, SPRING } from "./ui";
 
 interface Msg {
@@ -80,6 +80,8 @@ export function VoicePanel({
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const wakeRecRef = useRef<SpeechRecognitionLike | null>(null);
+  const isSpotterActiveRef = useRef(false);
+  const wakeTimerRef = useRef<NodeJS.Timeout | null>(null);
   const interimRecRef = useRef<SpeechRecognitionLike | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextVADRef = useRef<{ close: () => void } | null>(null);
@@ -87,6 +89,7 @@ export function VoicePanel({
   const whisperRef = useRef<{ transcribe: (audio: Float32Array) => Promise<string> } | null>(null);
   const webllmRef = useRef<{ generate: (prompt: string) => Promise<string> } | null>(null);
   const startWakeSpotterRef = useRef<(() => void) | null>(null);
+  const isSpeakingRef = useRef(false);
   const sessionIdRef = useRef("");
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -98,12 +101,37 @@ export function VoicePanel({
   thinkingRef.current = thinking;
   const onOpenRef = useRef(onOpen);
   onOpenRef.current = onOpen;
+  const runActionsRef = useRef(runActions);
+  runActionsRef.current = runActions;
+  const submitRef = useRef<((text: string) => Promise<void>) | null>(null);
+  const startListeningRef = useRef<(() => void) | null>(null);
 
   const sessionId = () => (sessionIdRef.current ||= `s_${Math.random().toString(36).slice(2, 10)}`);
   const voiceLocale = lang === "hi" ? "hi-IN" : lang === "mr" ? "mr-IN" : "en-IN";
 
+  // ── Wake Word Spotter ("Hey Vibe" / "Hey Roamy") ───────────────────────────
+  const stopWakeSpotter = useCallback((): void => {
+    if (wakeTimerRef.current) {
+      clearTimeout(wakeTimerRef.current);
+      wakeTimerRef.current = null;
+    }
+    if (wakeRecRef.current) {
+      try {
+        wakeRecRef.current.onresult = null;
+        wakeRecRef.current.onerror = null;
+        wakeRecRef.current.onend = null;
+        wakeRecRef.current.stop();
+      } catch {
+        // ignore
+      }
+      wakeRecRef.current = null;
+    }
+    isSpotterActiveRef.current = false;
+  }, []);
+
   // ── Natural Speech Synthesis (Edge Neural TTS + Fallback) ──────────────────
   const stopSpeaking = useCallback((): void => {
+    isSpeakingRef.current = false;
     if (audioPlayerRef.current) {
       audioPlayerRef.current.pause();
       audioPlayerRef.current.currentTime = 0;
@@ -119,18 +147,29 @@ export function VoicePanel({
     (text: string): void => {
       if (!("speechSynthesis" in window)) return;
       speechSynthesis.cancel();
+      isSpeakingRef.current = true;
+      // In full-duplex barge-in mode: keep wake spotter active so user can interrupt!
+      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
+        startWakeSpotterRef.current?.();
+      }
       const u = new SpeechSynthesisUtterance(text.slice(0, 600));
       u.lang = voiceLocale;
       u.rate = 1.02;
       u.onboundary = () => setCaption(text);
       u.onstart = () => setCaption(text);
       u.onend = () => {
-        setTimeout(() => setCaption(null), 900);
+        isSpeakingRef.current = false;
+        setTimeout(() => setCaption(null), 800);
         if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
-          startWakeSpotterRef.current?.();
+          setTimeout(() => {
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
+              startWakeSpotterRef.current?.();
+            }
+          }, 200);
         }
       };
       u.onerror = () => {
+        isSpeakingRef.current = false;
         if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
           startWakeSpotterRef.current?.();
         }
@@ -165,19 +204,30 @@ export function VoicePanel({
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
           audioPlayerRef.current = audio;
+          isSpeakingRef.current = true;
+          // In full-duplex barge-in mode: keep wake spotter active so user can interrupt!
+          if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
+            startWakeSpotterRef.current?.();
+          }
 
           audio.onended = () => {
             URL.revokeObjectURL(url);
             audioPlayerRef.current = null;
+            isSpeakingRef.current = false;
             setTimeout(() => setCaption(null), 800);
             if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
-              startWakeSpotterRef.current?.();
+              setTimeout(() => {
+                if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
+                  startWakeSpotterRef.current?.();
+                }
+              }, 200);
             }
           };
 
           audio.onerror = () => {
             URL.revokeObjectURL(url);
             audioPlayerRef.current = null;
+            isSpeakingRef.current = false;
             fallbackBrowserSpeak(text);
           };
 
@@ -192,18 +242,6 @@ export function VoicePanel({
     },
     [fallbackBrowserSpeak, lang, stopSpeaking, ttsOn],
   );
-
-  // ── Wake Word Spotter ("Hey Vibe" / "Hey Roamy") ───────────────────────────
-  const stopWakeSpotter = useCallback((): void => {
-    if (wakeRecRef.current) {
-      try {
-        wakeRecRef.current.stop();
-      } catch {
-        // ignore
-      }
-      wakeRecRef.current = null;
-    }
-  }, []);
 
   // ── Submit a transcript through the NLU ladder ────────────────────────────
   const submit = useCallback(
@@ -228,7 +266,7 @@ export function VoicePanel({
           const reply = parsed.reply ?? "Done — on-device model handled that.";
           setMessages((m) => [...m, { role: "roam", text: reply }]);
           void speak(reply);
-          runActions(actions, reply, "webllm");
+          runActionsRef.current?.(actions, reply, "webllm");
           return;
         }
 
@@ -260,20 +298,21 @@ export function VoicePanel({
         thinkingRef.current = false;
         setMessages((m) => [...m, { role: "roam", text: data.reply }]);
         void speak(data.reply);
-        runActions(data.actions ?? [], data.reply, data.nlu);
+        runActionsRef.current?.(data.actions ?? [], data.reply, data.nlu);
       } catch {
         setThinking(false);
         thinkingRef.current = false;
         const fallback = "I couldn't reach my language brain — but I'm still here. Try “plan a one-day food trip in Kalyan under ₹500”.";
         setMessages((m) => [...m, { role: "roam", text: fallback }]);
         setCaption(fallback);
-        if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+        if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpeakingRef.current) {
           startWakeSpotterRef.current?.();
         }
       }
     },
-    [runActions, speak, webllmOn],
+    [speak, webllmOn],
   );
+  submitRef.current = submit;
 
   // ── High-Accuracy Whisper Large v3 / Dual Smart Stop ────────────────────────
   const startWhisperCapture = useCallback(async (): Promise<void> => {
@@ -530,21 +569,22 @@ export function VoicePanel({
       listeningRef.current = false;
       if (e.error === "not-allowed") toast.error("Microphone permission denied — use text chat instead.");
       else if (e.error !== "aborted") toast.message("Voice hiccup — try again or type below.");
-      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpeakingRef.current) {
         startWakeSpotterRef.current?.();
       }
     };
     rec.onend = () => {
       setListening(false);
       listeningRef.current = false;
-      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpeakingRef.current) {
         startWakeSpotterRef.current?.();
       }
     };
     rec.start();
     setListening(true);
     listeningRef.current = true;
-  }, [startWhisperCapture, stopSpeaking, stopWakeSpotter, sttMode, submit, voiceLocale]);
+  }, [startWhisperCapture, stopSpeaking, stopWakeSpotter, sttMode, voiceLocale]);
+  startListeningRef.current = startListening;
 
   const stopListening = useCallback((): void => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -559,12 +599,13 @@ export function VoicePanel({
 
   const startWakeSpotter = useCallback((): void => {
     stopWakeSpotter();
-    if (listeningRef.current || thinkingRef.current || !handsFreeRef.current) return;
+    if (listeningRef.current || thinkingRef.current || !handsFreeRef.current || isSpotterActiveRef.current) return;
     const Ctor = getRecognition();
     if (!Ctor) return;
     try {
       const rec = new Ctor();
       wakeRecRef.current = rec;
+      isSpotterActiveRef.current = true;
       rec.lang = voiceLocale;
       rec.continuous = true;
       rec.interimResults = true;
@@ -572,57 +613,109 @@ export function VoicePanel({
       rec.onresult = (e) => {
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const text = e.results[i][0].transcript;
-          if (matchesWakeWord(text)) {
+          const { hasWake, command } = extractWakeCommand(text);
+          if (hasWake) {
+            const wasSpeaking = isSpeakingRef.current;
             stopSpeaking();
+            interruptAllSpeech();
             playWakeChime();
-            toast.success("👋 'Hey Vibe' detected! Listening…");
-            try {
-              rec.stop();
-            } catch {}
-            wakeRecRef.current = null;
+            stopWakeSpotter();
             onOpenRef.current?.();
-            startListening();
+
+            if (command.trim().length > 2) {
+              // User provided command in one breath: execute immediately without discarding
+              toast.success(`👋 Wake word detected${wasSpeaking ? " (interrupted)" : ""}: "${command}"`);
+              void submitRef.current?.(command);
+            } else {
+              // User spoke only the wake word: open and listen for command
+              toast.success(`👋 Wake word detected${wasSpeaking ? " (interrupted)" : ""}! Listening…`);
+              startListeningRef.current?.();
+            }
             return;
           }
         }
       };
 
       rec.onerror = (e) => {
+        isSpotterActiveRef.current = false;
         if (e.error === "not-allowed" || e.error === "service-not-allowed") {
           // In Chromium, background start before user interaction triggers not-allowed.
           // Retry automatically on the user's first touch/click rather than killing hands-free.
           const onUserGesture = () => {
             window.removeEventListener("click", onUserGesture);
             window.removeEventListener("keydown", onUserGesture);
-            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
               startWakeSpotterRef.current?.();
             }
           };
           window.addEventListener("click", onUserGesture, { once: true });
           window.addEventListener("keydown", onUserGesture, { once: true });
+        } else if (e.error === "network") {
+          // In Chromium, rapid restarts cause temporary network backoff. Wait 2.5s before retrying.
+          if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
+          wakeTimerRef.current = setTimeout(() => {
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
+              startWakeSpotterRef.current?.();
+            }
+          }, 2500);
+        } else if (e.error === "no-speech") {
+          // Normal room silence timeout in Chromium; onend handles re-arming cleanly.
         }
       };
 
       rec.onend = () => {
         wakeRecRef.current = null;
+        isSpotterActiveRef.current = false;
         if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
-          setTimeout(() => {
-            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current) {
+          if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
+          wakeTimerRef.current = setTimeout(() => {
+            if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
               startWakeSpotterRef.current?.();
             }
-          }, 400);
+          }, 450);
         }
       };
 
       rec.start();
     } catch {
-      // ignore
+      isSpotterActiveRef.current = false;
     }
-  }, [startListening, stopSpeaking, stopWakeSpotter, voiceLocale]);
+  }, [stopSpeaking, stopWakeSpotter, voiceLocale]);
 
   useEffect(() => {
     startWakeSpotterRef.current = startWakeSpotter;
   }, [startWakeSpotter]);
+
+  // Synchronize with external speech synthesis (e.g. read plan summary in Page / Day Planner)
+  useEffect(() => {
+    const handleGlobalSpeechStart = () => {
+      isSpeakingRef.current = true;
+      // In barge-in mode: ensure wake spotter remains active to catch interrupts
+      if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
+        startWakeSpotterRef.current?.();
+      }
+    };
+    const handleGlobalSpeechEnd = () => {
+      isSpeakingRef.current = false;
+      setTimeout(() => {
+        if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpotterActiveRef.current) {
+          startWakeSpotterRef.current?.();
+        }
+      }, 300);
+    };
+    const handleGlobalSpeechInterrupt = () => {
+      stopSpeaking();
+    };
+
+    window.addEventListener("roam:speech-start", handleGlobalSpeechStart);
+    window.addEventListener("roam:speech-end", handleGlobalSpeechEnd);
+    window.addEventListener("roam:speech-interrupt", handleGlobalSpeechInterrupt);
+    return () => {
+      window.removeEventListener("roam:speech-start", handleGlobalSpeechStart);
+      window.removeEventListener("roam:speech-end", handleGlobalSpeechEnd);
+      window.removeEventListener("roam:speech-interrupt", handleGlobalSpeechInterrupt);
+    };
+  }, [stopSpeaking]);
 
   useEffect(() => {
     if (handsFreeOn) {
@@ -690,15 +783,14 @@ export function VoicePanel({
       audioContextVADRef.current?.close();
       audioContextVADRef.current = null;
       recognitionRef.current?.stop();
-      stopSpeaking();
       setListening(false);
       listeningRef.current = false;
       setCaption(null);
-      if (handsFreeRef.current && !thinkingRef.current) {
+      if (handsFreeRef.current && !thinkingRef.current && !isSpeakingRef.current) {
         startWakeSpotterRef.current?.();
       }
     }
-  }, [open, stopSpeaking]);
+  }, [open]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
