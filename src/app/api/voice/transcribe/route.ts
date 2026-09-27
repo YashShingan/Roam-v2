@@ -28,7 +28,7 @@ export async function POST(req: Request) {
     groqPayload.append("temperature", "0.0");
     groqPayload.append(
       "prompt",
-      "Travel in India. Indian cities, heritage monuments, forts, temples, food. E.g. Shaniwar Wada, Aga Khan Palace, Sinhagad Fort, Pataleshwar, Kalyan, Titwala, Badlapur, FC Road, Irani Chai, Misal Pav, Vada Pav.",
+      "Travel assistant Roam, Hey Roamy, Hey Vibe, Roamy. Travel in India. Indian cities, heritage monuments, forts, temples, food. E.g. Shaniwar Wada, Aga Khan Palace, Sinhagad Fort, Pataleshwar, Kalyan, Titwala, Badlapur, FC Road, Irani Chai, Misal Pav, Vada Pav.",
     );
 
     const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {

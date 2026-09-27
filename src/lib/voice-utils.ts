@@ -1,6 +1,7 @@
 // ─── Voice Interaction Utilities (Wake Word & Stop Phrase Processing) ───
 
-export const WAKE_WORDS_REGEX = /\b((?:hey|hay|hai|hi|oye|oe|ok|a|k|ay|aye|eh)\s*(?:vibe|vive|bhai|wipe|wide|five|live|vaib|vyb|roamy|romy|romi|rumi|roami|rohmi|roomie|roomi|roomee|romey|roamit|romit|roam\s*it|roam|rome|romeo|row\s*me|rohit)|hero\s*me|hear\s*me\s*roam|heavy|high\s*vibe|roam\s*it|roamy|roomie|roomi|roami|romy|romey|rumi|roamit|romit)\b/i;
+export const WAKE_WORDS_REGEX =
+  /\b((?:hey|hay|hai|hi|oye|oe|ok|a|k|ay|aye|eh|he|ha|yo)\s*(?:vibe|vive|bhai|wipe|wide|five|live|vaib|vyb|r[ou]+a?m+(?:y+|i+|e+|u+i+|ie+|ey+|it)|roam|rome|rohmi|romeo|row\s*me|rohit|roam\s*it)|hero\s*me|hear\s*me\s*roam|heavy|high\s*vibe|r[ou]+a?m+(?:y+|i+|e{2,}|u+i+|ie+|ey+|it)|roam\s*it)\b/i;
 
 export const STOP_PHRASE_REGEX = /\b(that'?s\s*it|that\s*is\s*all|done|plan\s*it|go\s*ahead|that'?s\s*all|wrap\s*it\s*up)\b[.!?,]?\s*$/i;
 

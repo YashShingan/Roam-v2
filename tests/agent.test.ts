@@ -560,6 +560,15 @@ describe("Voice Utilities: Wake Word Spotting, Barge-In & Roamy Phonetics", () =
       "hey rohit",
       "roam it",
       "hey roam it",
+      "rumui",
+      "hey rumui",
+      "hi rumui",
+      "rumeee",
+      "hey rumeee",
+      "roameee",
+      "hey roameee",
+      "rumee",
+      "roamee",
     ];
 
     for (const variant of roamyVariants) {

@@ -39,6 +39,11 @@ const MapView = dynamic(() => import("@/components/map").then((m) => m.MapView),
   loading: () => <div className="skeleton-shimmer h-[72vh] w-full rounded-[22px]" />,
 });
 
+const MascotWidget = dynamic(
+  () => import("@/components/mascot").then((m) => m.MascotWidget),
+  { ssr: false }
+);
+
 interface PlacesResponse {
   city: string;
   cityLabel: string;
@@ -963,6 +968,20 @@ export default function Home() {
         }}
       />
       <KeyboardHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+
+      {mounted && (
+        <MascotWidget
+          city={placesQuery.data?.cityLabel ?? city}
+          onOpenVoice={() => setVoiceOpen(true)}
+          onSelectPrompt={(prompt) => {
+            setVoiceOpen(true);
+            toast.message(`Ask Roamy: "${prompt}"`);
+          }}
+          isVoiceOpen={voiceOpen}
+          isPlanOpen={planOpen}
+          stopsCount={stopsCount}
+        />
+      )}
 
       {compare.length >= 2 && view !== "grid" && <span className="sr-only">{compare.length} places queued for comparison</span>}
     </main>

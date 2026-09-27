@@ -576,6 +576,7 @@ export function VoicePanel({
     rec.onend = () => {
       setListening(false);
       listeningRef.current = false;
+      window.dispatchEvent(new CustomEvent("roam:voice-idle"));
       if (handsFreeRef.current && !listeningRef.current && !thinkingRef.current && !isSpeakingRef.current) {
         startWakeSpotterRef.current?.();
       }
@@ -583,6 +584,7 @@ export function VoicePanel({
     rec.start();
     setListening(true);
     listeningRef.current = true;
+    window.dispatchEvent(new CustomEvent("roam:voice-listening"));
   }, [startWhisperCapture, stopSpeaking, stopWakeSpotter, sttMode, voiceLocale]);
   startListeningRef.current = startListening;
 
@@ -595,6 +597,7 @@ export function VoicePanel({
     recognitionRef.current?.stop();
     setListening(false);
     listeningRef.current = false;
+    window.dispatchEvent(new CustomEvent("roam:voice-idle"));
   }, []);
 
   const startWakeSpotter = useCallback((): void => {
@@ -707,13 +710,22 @@ export function VoicePanel({
       stopSpeaking();
     };
 
+    const handleWakeActivated = () => {
+      onOpenRef.current?.();
+      setTimeout(() => {
+        startListeningRef.current?.();
+      }, 150);
+    };
+
     window.addEventListener("roam:speech-start", handleGlobalSpeechStart);
     window.addEventListener("roam:speech-end", handleGlobalSpeechEnd);
     window.addEventListener("roam:speech-interrupt", handleGlobalSpeechInterrupt);
+    window.addEventListener("roam:wake-activated", handleWakeActivated);
     return () => {
       window.removeEventListener("roam:speech-start", handleGlobalSpeechStart);
       window.removeEventListener("roam:speech-end", handleGlobalSpeechEnd);
       window.removeEventListener("roam:speech-interrupt", handleGlobalSpeechInterrupt);
+      window.removeEventListener("roam:wake-activated", handleWakeActivated);
     };
   }, [stopSpeaking]);
 
