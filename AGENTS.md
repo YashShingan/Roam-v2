@@ -71,6 +71,14 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - **Community Safety Threshold**: If 2 or more distinct travelers report a listing for safety violations or scams, the system automatically marks `reviewStatus = 'flagged'`, suspending it from public view pending review.
    - **Stationary Canvas Flow Invariant**: Any popups, bubbles, or dialogs mounted beside floating interactive 3D widgets must be rendered in absolute positioning outside document flow (`absolute bottom-full mb-2`) so that dismissing or toggling them causes zero coordinate shifts or jerks to the 3D canvas.
 
+18. **Mobile-First Responsive Layout, WebGL Frame-Throttling & Large-Grid Animation Invariants (`src/components/mascot.tsx`, `src/components/cards.tsx`, `src/components/filters.tsx`, `src/app/globals.css`)**:
+   - **Decoupled 3D Position Transforms**: Never drive floating 3D widget coordinates via React state (`setPos`) inside `requestAnimationFrame`. Apply positions directly to the DOM element via GPU-accelerated `transform: translate3d(x px, y px, 0)` with `will-change: transform`.
+   - **Adaptive WebGL Power & Mobile Throttling**: Ambient 3D companion loops must throttle render passes when idle (capped at 24–30 FPS during subtle hovering, rendering at full 60 FPS only during active speech or reactions). On mobile viewports or devices with `window.innerWidth < 640`, clamp `devicePixelRatio` to `Math.min(window.devicePixelRatio, 1.25)` and disable tone mapping or heavy post-processing.
+   - **Mobile Viewport Culling & Touch Immunity**: On screen widths `< 640px`, floating 3D mascots must automatically collapse to a sleek, compact bottom-docked avatar pill (≤ 44px) that does not obstruct touch-scrolling or cover interactive place cards.
+   - **Large Collection Layout Guardrails**: Never apply Framer Motion `<motion.div layout>` or per-item `layoutId` to place grids containing more than 12 items. Use GPU-composited CSS transitions (`clay-lift`, opacity/transform keyframes) to eliminate synchronous `getBoundingClientRect` layout thrashing.
+   - **Debounced Search & History State**: Search inputs that filter large datasets must debounce state updates (150–200ms) or use `useDeferredValue`, and must never call `window.history.replaceState` synchronously on every raw keystroke.
+   - **Touch Target Scoping**: Never apply global `min-width: 44px; min-height: 44px` across raw `a` or `[role="button"]` tags, as it distorts compact badges, close crosses, and segmented pills. Scope touch targets to `.touch-target` and apply `touch-action: manipulation`.
+
 
 
 

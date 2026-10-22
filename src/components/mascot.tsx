@@ -93,6 +93,7 @@ export function MascotWidget({
     prompt: "Plan a quick 2-hour micro trip",
   });
   const [ready, setReady] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const [reactionState, setReactionState] = useState<"idle" | "celebrating" | "shivering" | "peeking">("idle");
   const reactionRef = useRef<"idle" | "celebrating" | "shivering" | "peeking">("idle");
   const reactionEndTimeRef = useRef<number>(0);
@@ -150,8 +151,18 @@ export function MascotWidget({
     [city, stopsCount]
   );
 
-  // 2. Initial Position Setup with LocalStorage Memory
+  // 2. Initial Position Setup with LocalStorage Memory & Mobile Detection
   useEffect(() => {
+    const checkMobile = () => {
+      const mobile = window.innerWidth < 640;
+      setIsMobile(mobile);
+      if (mobile) {
+        setIsMinimized(true);
+      }
+    };
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+
     let defaultX = Math.max(20, window.innerWidth - 220);
     let defaultY = Math.max(20, window.innerHeight - 300);
 
@@ -172,6 +183,8 @@ export function MascotWidget({
     targetPosRef.current = { x: defaultX, y: defaultY };
     setReady(true);
     void fetchGroqThought("idle");
+
+    return () => window.removeEventListener("resize", checkMobile);
   }, [fetchGroqThought]);
 
   // 3. Autonomous Roaming Interval (Every 28–42 seconds glide to safe anchor)
@@ -257,7 +270,10 @@ export function MascotWidget({
           const vx = dx * step;
           bankRef.current = Math.max(-0.25, Math.min(0.25, -vx * 0.05));
 
-          setPos({ x: nextX, y: nextY });
+          posRef.current = { x: nextX, y: nextY };
+          if (widgetRef.current) {
+            widgetRef.current.style.transform = `translate3d(${nextX}px, ${nextY}px, 0)`;
+          }
         } else {
           // Recover to upright orientation when resting
           bankRef.current *= 0.92;
@@ -348,14 +364,17 @@ export function MascotWidget({
     const camera = new THREE.PerspectiveCamera(40, width / height, 0.1, 100);
     camera.position.set(0, 0, 5.0);
 
-    // WebGLRenderer with transparency
+    // WebGLRenderer with transparency & clamped device pixel ratio for low-end GPU efficiency
     const renderer = new THREE.WebGLRenderer({
       alpha: true,
       antialias: true,
       powerPreference: "high-performance",
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const dpr = typeof window !== "undefined"
+      ? Math.min(window.devicePixelRatio || 1, window.innerWidth < 640 ? 1.15 : 1.5)
+      : 1;
+    renderer.setPixelRatio(dpr);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.4;
     renderer.domElement.style.width = "100%";
@@ -516,11 +535,23 @@ export function MascotWidget({
       );
     });
 
-    // ── Animation Loop ────────────────────────────────────────────────────────
+    // ── Animation Loop with Idle Frame Throttling (saves ~70% GPU on idle) ──
     const startTime = performance.now();
+    let lastRenderTime = 0;
+    const IDLE_FRAME_INTERVAL = 1000 / 28; // ~28 FPS when resting/hovering
 
-    function renderLoop() {
+    function renderLoop(currentTime: number) {
       animId = requestAnimationFrame(renderLoop);
+      if (typeof document !== "undefined" && document.hidden) return; // Tab paused
+
+      const isReacting = Date.now() < reactionEndTimeRef.current;
+      const needsFullSpeed = isSpeaking || isListening || isReacting;
+
+      if (!needsFullSpeed && currentTime - lastRenderTime < IDLE_FRAME_INTERVAL) {
+        return; // Throttle idle render pass
+      }
+      lastRenderTime = currentTime;
+
       const elapsed = (performance.now() - startTime) / 1000;
 
       // Base hovering levitation
@@ -532,7 +563,6 @@ export function MascotWidget({
       const currentBankZ = bankRef.current;
 
       // Context-aware Reaction Handling
-      const isReacting = Date.now() < reactionEndTimeRef.current;
       const curReaction = isReacting ? reactionRef.current : "idle";
       if (!isReacting && reactionRef.current !== "idle") {
         reactionRef.current = "idle";
@@ -577,10 +607,18 @@ export function MascotWidget({
 
       renderer.render(scene, camera);
     }
-    renderLoop();
+    renderLoop(performance.now());
+
+    const onVisibilityChange = () => {
+      if (!document.hidden && !isDisposed) {
+        lastRenderTime = performance.now();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       isDisposed = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       cancelAnimationFrame(animId);
       renderer.dispose();
       container.innerHTML = "";
@@ -623,7 +661,10 @@ export function MascotWidget({
     const nextY = Math.max(10, Math.min(window.innerHeight - 230, dragRef.current.initialY + deltaY));
 
     targetPosRef.current = { x: nextX, y: nextY };
-    setPos({ x: nextX, y: nextY });
+    posRef.current = { x: nextX, y: nextY };
+    if (widgetRef.current) {
+      widgetRef.current.style.transform = `translate3d(${nextX}px, ${nextY}px, 0)`;
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
@@ -644,10 +685,11 @@ export function MascotWidget({
     if (!dragRef.current.hasMoved) {
       handleMascotClick();
     } else {
+      setPos({ ...posRef.current });
       // Pause autonomous roaming for 60 seconds to respect user drag placement
       userPausedUntilRef.current = Date.now() + 60000;
       try {
-        localStorage.setItem("roam_mascot_pos", JSON.stringify(pos));
+        localStorage.setItem("roam_mascot_pos", JSON.stringify(posRef.current));
       } catch {
         // ignore
       }
@@ -668,17 +710,30 @@ export function MascotWidget({
 
   return (
     <>
-      {/* ── Minimized Floating Avatar Pill ────────────────────────────────────── */}
+      {/* ── Minimized Floating Avatar Pill (Auto-docked on mobile) ────────────── */}
       {isMinimized ? (
         <div
-          style={{ left: `${pos.x}px`, top: `${pos.y}px` }}
-          className="fixed z-50 flex items-center gap-2 rounded-full clay-raised-sm bg-card/90 px-3 py-2 shadow-lg backdrop-blur-md cursor-pointer border border-primary/30"
-          onClick={() => setIsMinimized(false)}
-          title="Restore 3D Mascot Roamy"
+          style={isMobile ? undefined : { top: 0, left: 0, transform: `translate3d(${pos.x}px, ${pos.y}px, 0)` }}
+          className={cn(
+            "fixed z-50 flex items-center gap-2 rounded-full clay-raised-sm bg-card/95 px-3 py-2 shadow-lg backdrop-blur-md cursor-pointer border border-primary/40 touch-manipulation transition-transform",
+            isMobile ? "bottom-20 right-4" : "",
+          )}
+          onClick={() => {
+            if (isMobile) {
+              handleMascotClick();
+            } else {
+              setIsMinimized(false);
+            }
+          }}
+          title={isMobile ? "Tap to speak with Roamy" : "Restore 3D Mascot Roamy"}
         >
           <span className="flex h-3 w-3 rounded-full bg-primary animate-pulse" />
           <span className="text-xs font-bold text-foreground">Roamy</span>
-          <Maximize2 size={13} className="text-muted-foreground ml-1" />
+          {isMobile ? (
+            <Mic size={13} className="text-primary ml-1" />
+          ) : (
+            <Maximize2 size={13} className="text-muted-foreground ml-1" />
+          )}
         </div>
       ) : (
         /* ── Full Interactive 3D Mascot Widget ───────────────────────────────── */
@@ -688,7 +743,12 @@ export function MascotWidget({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          style={{ left: `${pos.x}px`, top: `${pos.y}px` }}
+          style={{
+            top: 0,
+            left: 0,
+            transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
+            willChange: "transform",
+          }}
           className="fixed z-50 flex flex-col items-center select-none cursor-grab active:cursor-grabbing touch-none"
           role="region"
           aria-label="3D Mascot Companion Roamy"

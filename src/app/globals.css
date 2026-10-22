@@ -191,12 +191,20 @@ body {
   animation: marquee 36s linear infinite;
 }
 @keyframes blob-drift {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(26px, -18px) scale(1.06); }
-  66% { transform: translate(-18px, 14px) scale(0.96); }
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(26px, -18px, 0) scale(1.06); }
+  66% { transform: translate3d(-18px, 14px, 0) scale(0.96); }
 }
 .animate-blob {
   animation: blob-drift 14s ease-in-out infinite;
+  will-change: transform;
+}
+@media (max-width: 640px) {
+  .animate-blob {
+    animation-duration: 22s;
+    filter: blur(14px) !important;
+    opacity: 0.65;
+  }
 }
 @keyframes orb-pulse {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent); }
@@ -313,10 +321,13 @@ body {
   }
 }
 
-/* ─── Touch-friendly tap targets ───────────────────────────────────────────── */
+/* ─── Touch-friendly ergonomics ───────────────────────────────────────────── */
 @media (pointer: coarse) {
-  button, [role="button"], a {
+  .touch-target {
     min-height: 44px;
     min-width: 44px;
+  }
+  button, [role="button"] {
+    touch-action: manipulation;
   }
 }

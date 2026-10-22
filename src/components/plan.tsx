@@ -1150,9 +1150,9 @@ export function PlanSheet({
             </h2>
           </div>
 
-          {/* Sub-bar: Transport Mode Switcher & Quick Navigation */}
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="inline-flex items-center gap-1 bg-surface/90 p-1 rounded-xl border border-border/50 shadow-sm">
+          {/* Sub-bar: Transport Mode Switcher & Quick Navigation (smooth horizontal scroll on mobile) */}
+          <div className="flex items-center justify-between gap-2 overflow-x-auto hide-scrollbar pb-1">
+            <div className="inline-flex items-center gap-1 bg-surface/90 p-1 rounded-xl border border-border/50 shadow-sm shrink-0">
               <button
                 onClick={() => handleTransportSwitch("walk")}
                 className={cn(
@@ -1191,7 +1191,7 @@ export function PlanSheet({
               </button>
             </div>
 
-            <div className="flex items-center gap-1.5 text-[11px]">
+            <div className="flex items-center gap-1.5 text-[11px] shrink-0">
               {fullDayGmapsUrl && (
                 <a
                   href={fullDayGmapsUrl}

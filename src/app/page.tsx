@@ -131,19 +131,22 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── URL sync ──────────────────────────────────────────────────────────────
+  // ── URL sync (debounced to avoid browser history thrashing during rapid typing) ──
   useEffect(() => {
     if (!city || !mounted) return;
-    const sp = new URLSearchParams();
-    sp.set("city", city);
-    if (view !== "grid") sp.set("view", view);
-    if (filters.q) sp.set("q", filters.q);
-    if (filters.categories.length) sp.set("cats", filters.categories.join(","));
-    if (filters.budget) sp.set("budget", String(filters.budget));
-    if (filters.sort !== "smart") sp.set("sort", filters.sort);
-    if (filters.openNow) sp.set("open", "1");
-    if (filters.hiddenGem) sp.set("gem", "1");
-    window.history.replaceState(null, "", `?${sp.toString()}`);
+    const timer = setTimeout(() => {
+      const sp = new URLSearchParams();
+      sp.set("city", city);
+      if (view !== "grid") sp.set("view", view);
+      if (filters.q) sp.set("q", filters.q);
+      if (filters.categories.length) sp.set("cats", filters.categories.join(","));
+      if (filters.budget) sp.set("budget", String(filters.budget));
+      if (filters.sort !== "smart") sp.set("sort", filters.sort);
+      if (filters.openNow) sp.set("open", "1");
+      if (filters.hiddenGem) sp.set("gem", "1");
+      window.history.replaceState(null, "", `?${sp.toString()}`);
+    }, 200);
+    return () => clearTimeout(timer);
   }, [city, view, filters, mounted]);
 
   // ── data queries ──────────────────────────────────────────────────────────
@@ -748,8 +751,8 @@ export default function Home() {
 
       <div className="mx-auto max-w-6xl px-3 sm:px-6 pt-4 sm:pt-5">
         {/* view switch & quick actions */}
-        <div className="mb-4 sm:mb-5 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex w-max gap-1 sm:gap-1.5 rounded-full clay-dock p-1 sm:p-1.5 mx-auto sm:mx-0" role="tablist" aria-label="Views">
+        <div className="mb-4 sm:mb-5 flex flex-col sm:flex-row items-center justify-between gap-2.5">
+          <div className="flex w-full sm:w-max justify-center sm:justify-start gap-1 sm:gap-1.5 rounded-full clay-dock p-1 sm:p-1.5" role="tablist" aria-label="Views">
             {(
               [
                 ["grid", <Grid3X3 key="g" size={15} />, "Discover"],
@@ -772,7 +775,7 @@ export default function Home() {
             ))}
           </div>
 
-          <div className="flex items-center gap-2 mx-auto sm:mx-0">
+          <div className="flex w-full sm:w-auto items-center justify-center gap-2 overflow-x-auto hide-scrollbar pb-0.5">
             <button
               onClick={() =>
                 replan({
@@ -783,17 +786,17 @@ export default function Home() {
                   persona: "solo",
                 })
               }
-              className="clay-raised-sm flex items-center gap-1.5 rounded-full px-3.5 h-8 sm:h-9 text-xs font-bold text-foreground hover:text-primary transition-all"
+              className="clay-raised-sm flex items-center gap-1.5 rounded-full px-3.5 h-8 sm:h-9 text-xs font-bold text-foreground hover:text-primary transition-all shrink-0"
               title="Quick zero-stress micro itinerary for a short 2-hour window near you"
             >
               <span>⚡ 2h Micro-Trip</span>
             </button>
             <button
               onClick={() => setProviderOpen(true)}
-              className="clay-raised-sm flex items-center gap-1.5 rounded-full px-3.5 h-8 sm:h-9 text-xs font-bold text-primary hover:bg-primary/10 transition-all border border-primary/25"
+              className="clay-raised-sm flex items-center gap-1.5 rounded-full px-3.5 h-8 sm:h-9 text-xs font-bold text-primary hover:bg-primary/10 transition-all border border-primary/25 shrink-0"
               title="List your local tours, workshops, food experiences, or view traveler demand radar"
             >
-              <span>🌟 Host / List Experience</span>
+              <span>🌟 Host Experience</span>
             </button>
           </div>
         </div>

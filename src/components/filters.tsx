@@ -53,6 +53,20 @@ export function FilterBar({
   const t = (k: DictKey) => translate(lang, k);
   const searchRef = useRef<HTMLInputElement>(null);
   const [showAll, setShowAll] = useState(false);
+  const [searchTerm, setSearchTerm] = useState(filters.q);
+
+  useEffect(() => {
+    setSearchTerm(filters.q);
+  }, [filters.q]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (searchTerm !== filters.q) {
+        onFilters(set({ q: searchTerm }));
+      }
+    }, 150);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -76,14 +90,21 @@ export function FilterBar({
             <Search size={15} className="ml-3.5 shrink-0 text-muted-foreground" />
             <input
               ref={searchRef}
-              value={filters.q}
-              onChange={(e) => onFilters(set({ q: e.target.value }))}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
               placeholder={`${t("filters.search")}  ( / )`}
               aria-label={t("filters.search")}
               className="h-full w-full bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground"
             />
-            {filters.q && (
-              <button onClick={() => onFilters(set({ q: "" }))} className="mr-2 text-xs text-muted-foreground hover:text-foreground" aria-label="Clear search">
+            {searchTerm && (
+              <button
+                onClick={() => {
+                  setSearchTerm("");
+                  onFilters(set({ q: "" }));
+                }}
+                className="mr-2 text-xs text-muted-foreground hover:text-foreground"
+                aria-label="Clear search"
+              >
                 ✕
               </button>
             )}

@@ -69,14 +69,27 @@ export function applyFilters(
   return [...out].sort(sorters[f.sort]);
 }
 
-// ─── Live open dot — recompute every minute ─────────────────────────────────
+// ─── Live open dot — shared global minute ticker ───────────────────────────
+let globalTick = 0;
+const tickSubscribers = new Set<() => void>();
+
+if (typeof window !== "undefined") {
+  setInterval(() => {
+    globalTick++;
+    tickSubscribers.forEach((cb) => cb());
+  }, 60000);
+}
+
 export function useOpenNow(exp: Experience): { open: boolean | null; label: string } {
-  const [tick, setTick] = useState(0);
+  const [, setTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 60000);
-    return () => clearInterval(id);
+    const cb = () => setTick((t) => t + 1);
+    tickSubscribers.add(cb);
+    return () => {
+      tickSubscribers.delete(cb);
+    };
   }, []);
-  const open = useMemo(() => openNowFromHours(exp.openingHoursRaw), [exp.openingHoursRaw, tick]);
+  const open = useMemo(() => openNowFromHours(exp.openingHoursRaw), [exp.openingHoursRaw, globalTick]);
   return {
     open,
     label: open === null ? "hoursUnknown" : open ? "open" : "closed",
@@ -136,15 +149,8 @@ export function PlaceCard({
   const crowd = crowdBars(exp);
 
   return (
-    <motion.article
-      layout
-      layoutId={`place-${exp.id}`}
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.96 }}
-      transition={{ ...SPRING, delay: Math.min(index * 0.06, 0.5) }}
-      whileHover={window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? undefined : { rotate: 0.4, y: -2 }}
-      className="clay-raised clay-lift group relative flex cursor-pointer flex-col overflow-hidden"
+    <article
+      className="clay-raised clay-lift group relative flex cursor-pointer flex-col overflow-hidden transition-all duration-200"
       onClick={() => onOpen(exp)}
       role="button"
       tabIndex={0}
@@ -270,7 +276,7 @@ export function PlaceCard({
           </a>
         </div>
       </div>
-    </motion.article>
+    </article>
   );
 }
 
@@ -410,18 +416,16 @@ export function PlaceGrid({
     );
   }
   return (
-    <motion.div layout className="grid grid-cols-1 gap-4 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 max-w-lg sm:max-w-none mx-auto sm:mx-0">
-      <AnimatePresence mode="popLayout">
-        {places.slice(0, visible).map((p, i) => (
-          <PlaceCard
-            key={p.id}
-            exp={p}
-            index={i}
-            onOpen={onOpen}
-            distanceKm={userLoc && p.lat !== undefined && p.lon !== undefined ? haversineKm(userLoc.lat, userLoc.lon, p.lat, p.lon) : undefined}
-          />
-        ))}
-      </AnimatePresence>
+    <div className="grid grid-cols-1 gap-4 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 max-w-lg sm:max-w-none mx-auto sm:mx-0">
+      {places.slice(0, visible).map((p, i) => (
+        <PlaceCard
+          key={p.id}
+          exp={p}
+          index={i}
+          onOpen={onOpen}
+          distanceKm={userLoc && p.lat !== undefined && p.lon !== undefined ? haversineKm(userLoc.lat, userLoc.lon, p.lat, p.lon) : undefined}
+        />
+      ))}
       {visible < places.length && (
         <div
           ref={sentinelRef}
@@ -432,7 +436,7 @@ export function PlaceGrid({
           Loading more places — {visible} of {places.length} shown
         </div>
       )}
-    </motion.div>
+    </div>
   );
 }
 
