@@ -172,7 +172,9 @@ export function PlaceCard({
           </div>
         )}
         <div className="absolute left-2.5 top-2.5 flex flex-wrap gap-1.5 max-w-[85%]">
-          {exp.isLocalHost && <Badge tone="hot">🌟 Local Host</Badge>}
+          {exp.isLocalHost && (
+            <Badge tone="gem">🌟 Verified Host</Badge>
+          )}
           {exp.community.mentions >= 150 && <Badge tone="hot">🔥 {exp.community.mentions}+</Badge>}
           {exp.community.mentions > 0 && exp.community.mentions < 20 && !exp.isLocalHost && <Badge tone="fresh">✨ fresh</Badge>}
           {exp.community.hiddenGem && <Badge tone="gem">🌿 hidden gem</Badge>}

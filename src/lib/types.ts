@@ -99,6 +99,8 @@ export interface Experience {
   contactWhatsapp?: string;
   contactPhone?: string;
   availabilitySlots?: string[];
+  reviewStatus?: "verified" | "flagged" | "pending";
+  inquiriesCount?: number;
 }
 
 export interface ProviderListing {
@@ -121,6 +123,11 @@ export interface ProviderListing {
   lat?: number;
   lon?: number;
   createdAt: number;
+  isActive?: boolean;
+  reviewStatus?: "verified" | "flagged" | "pending";
+  moderationNotes?: string;
+  inquiriesCount?: number;
+  reportCount?: number;
 }
 
 export type TravelerPersona = "solo" | "couple" | "family" | "group";

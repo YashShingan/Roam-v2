@@ -280,6 +280,16 @@ export default function Home() {
         if (!res.ok || !j.plan) throw new Error(j.error ?? "planning failed");
         setPlan(j.plan);
         setPlanOpen(true);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("roam:trip-planned", {
+              detail: {
+                stopsCount: j.plan.days.reduce((a, d) => a + d.stops.length, 0),
+                city: j.plan.cityLabel,
+              },
+            }),
+          );
+        }
         toast.success(`Route ready — ${j.plan.days.reduce((a, d) => a + d.stops.length, 0)} stops`);
         if (j.plan.voiceSummary && !voiceOpen) {
           speakWithCoordination(j.plan.voiceSummary.slice(0, 320), "en-IN");

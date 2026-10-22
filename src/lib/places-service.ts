@@ -226,6 +226,8 @@ export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}
     contactWhatsapp: pv.contactWhatsapp,
     contactPhone: pv.contactPhone,
     availabilitySlots: pv.availabilitySlots,
+    reviewStatus: pv.reviewStatus ?? "verified",
+    inquiriesCount: pv.inquiriesCount ?? 0,
   });
 
   const loadStored = async (): Promise<Experience[]> => {
@@ -238,13 +240,15 @@ export async function getPlacesForCity(cityRaw: string, opts: PlacesOptions = {}
       ...(await loadProvidersForCity(cityKey)),
       ...(await loadProvidersForCity(city.toLowerCase())),
     ];
-    // dedupe providers by id
+    // dedupe providers by id and filter out inactive/flagged listings
     const seenPv = new Set<string>();
     const uniquePv: ProviderListing[] = [];
     for (const pv of providers) {
       if (!seenPv.has(pv.id)) {
         seenPv.add(pv.id);
-        uniquePv.push(pv);
+        if (pv.isActive !== false && pv.reviewStatus !== "flagged") {
+          uniquePv.push(pv);
+        }
       }
     }
     const providerExps = uniquePv.map(providerToExperience);

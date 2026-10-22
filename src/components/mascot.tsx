@@ -50,6 +50,28 @@ function playWakeChime() {
   }
 }
 
+function playCelebrationChime() {
+  try {
+    const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    const now = ctx.currentTime;
+    const freqs = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
+    freqs.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, now + idx * 0.08);
+      gain.gain.setValueAtTime(0.06, now + idx * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.08 + 0.22);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.08);
+      osc.stop(now + idx * 0.08 + 0.25);
+    });
+  } catch {
+    // AudioContext blocked before user gesture — ignore
+  }
+}
+
 export function MascotWidget({
   city = "Pune",
   onOpenVoice,
@@ -71,6 +93,9 @@ export function MascotWidget({
     prompt: "Plan a quick 2-hour micro trip",
   });
   const [ready, setReady] = useState(false);
+  const [reactionState, setReactionState] = useState<"idle" | "celebrating" | "shivering" | "peeking">("idle");
+  const reactionRef = useRef<"idle" | "celebrating" | "shivering" | "peeking">("idle");
+  const reactionEndTimeRef = useRef<number>(0);
 
   // Position & autonomous roaming targets
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: 20, y: 350 });
@@ -253,18 +278,58 @@ export function MascotWidget({
     const handleListeningStart = () => setIsListening(true);
     const handleListeningEnd = () => setIsListening(false);
 
+    const handleTripPlanned = (e: Event) => {
+      const custom = e as CustomEvent<{ stopsCount?: number; city?: string }>;
+      reactionRef.current = "celebrating";
+      reactionEndTimeRef.current = Date.now() + 4500;
+      setReactionState("celebrating");
+      playCelebrationChime();
+      const stops = custom.detail?.stopsCount || stopsCount;
+      setCurrentThought(`Itinerary locked! Optimized route with ${stops > 0 ? stops + " stops" : "zero zig-zags"} 🎉`);
+      setThoughtAction({ text: "Review Plan", prompt: "Show day itinerary summary" });
+      setBubbleVisible(true);
+    };
+
+    const handleWeatherSim = (e: Event) => {
+      const custom = e as CustomEvent<{ scenario?: { precipMm?: number; tempC?: number } }>;
+      reactionRef.current = "shivering";
+      reactionEndTimeRef.current = Date.now() + 4500;
+      setReactionState("shivering");
+      const isRain = (custom.detail?.scenario?.precipMm ?? 0) > 0;
+      setCurrentThought(isRain ? "Rain cascade simulated! Check Digital Twin for indoor shelters 🌧️" : "Heatwave spike simulated! Pace your outdoor walking ☀️");
+      setThoughtAction({ text: "Suggest Backups", prompt: "Suggest indoor backup stops for rain" });
+      setBubbleVisible(true);
+    };
+
+    const handlePlaceInspect = (e: Event) => {
+      const custom = e as CustomEvent<{ placeName?: string; category?: string }>;
+      reactionRef.current = "peeking";
+      reactionEndTimeRef.current = Date.now() + 5000;
+      setReactionState("peeking");
+      const placeName = custom.detail?.placeName || "this place";
+      setCurrentThought(`Checking out "${placeName}"! Verified community spot ✨`);
+      setThoughtAction({ text: "Ask About Spot", prompt: `Tell me more about ${placeName}` });
+      setBubbleVisible(true);
+    };
+
     window.addEventListener("roam:speech-start", handleSpeechStart);
     window.addEventListener("roam:speech-end", handleSpeechEnd);
     window.addEventListener("roam:voice-listening", handleListeningStart);
     window.addEventListener("roam:voice-idle", handleListeningEnd);
+    window.addEventListener("roam:trip-planned", handleTripPlanned);
+    window.addEventListener("roam:weather-sim", handleWeatherSim);
+    window.addEventListener("roam:place-inspect", handlePlaceInspect);
 
     return () => {
       window.removeEventListener("roam:speech-start", handleSpeechStart);
       window.removeEventListener("roam:speech-end", handleSpeechEnd);
       window.removeEventListener("roam:voice-listening", handleListeningStart);
       window.removeEventListener("roam:voice-idle", handleListeningEnd);
+      window.removeEventListener("roam:trip-planned", handleTripPlanned);
+      window.removeEventListener("roam:weather-sim", handleWeatherSim);
+      window.removeEventListener("roam:place-inspect", handlePlaceInspect);
     };
-  }, []);
+  }, [stopsCount]);
 
   // 7. Three.js Canvas Scene Lifecycle with Upright Orientation
   useEffect(() => {
@@ -466,8 +531,33 @@ export function MascotWidget({
       // Directional Banking Roll from velocity
       const currentBankZ = bankRef.current;
 
-      // Audio Speech Reactivity (Head-bobbing synced to speech)
-      if (isSpeaking) {
+      // Context-aware Reaction Handling
+      const isReacting = Date.now() < reactionEndTimeRef.current;
+      const curReaction = isReacting ? reactionRef.current : "idle";
+      if (!isReacting && reactionRef.current !== "idle") {
+        reactionRef.current = "idle";
+        setReactionState("idle");
+      }
+
+      if (curReaction === "celebrating") {
+        // Joyful 360 spin + celebratory vertical bob
+        mascotMaster.position.y = hoverY * 2.2 + 0.08;
+        mascotMaster.rotation.y = (elapsed * 6.5) % (Math.PI * 2);
+        mascotMaster.rotation.z = currentBankZ + Math.sin(elapsed * 8) * 0.08;
+        mascotMaster.rotation.x = hoverRotX;
+      } else if (curReaction === "shivering") {
+        // Cold / trembling wobble
+        mascotMaster.position.y = hoverY - 0.03;
+        mascotMaster.rotation.y = hoverRotY;
+        mascotMaster.rotation.z = currentBankZ + Math.sin(elapsed * 45) * 0.12;
+        mascotMaster.rotation.x = hoverRotX + Math.cos(elapsed * 50) * 0.08;
+      } else if (curReaction === "peeking") {
+        // Inquisitive tilted peek
+        mascotMaster.position.y = hoverY + 0.03;
+        mascotMaster.rotation.y = hoverRotY + 0.25;
+        mascotMaster.rotation.z = currentBankZ + 0.16;
+        mascotMaster.rotation.x = hoverRotX - 0.1;
+      } else if (isSpeaking) {
         mascotMaster.position.y = hoverY + Math.sin(elapsed * 9.0) * 0.06;
         mascotMaster.rotation.y = hoverRotY + Math.sin(elapsed * 6.0) * 0.09;
         mascotMaster.rotation.x = hoverRotX + Math.sin(elapsed * 10.0) * 0.05;
@@ -723,6 +813,21 @@ export function MascotWidget({
               <>
                 <Mic size={11} className="text-cyan-400" />
                 <span>Listening to you…</span>
+              </>
+            ) : reactionState === "celebrating" ? (
+              <>
+                <Sparkles size={11} className="text-amber-400 animate-spin" />
+                <span className="text-amber-400">Route Locked! 🎉</span>
+              </>
+            ) : reactionState === "shivering" ? (
+              <>
+                <span className="text-[11px] animate-pulse">🌧️</span>
+                <span className="text-cyan-400">Weather Alert!</span>
+              </>
+            ) : reactionState === "peeking" ? (
+              <>
+                <Compass size={11} className="text-emerald-400" />
+                <span className="text-emerald-400">Exploring Spot…</span>
               </>
             ) : (
               <>

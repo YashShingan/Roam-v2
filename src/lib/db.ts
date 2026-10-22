@@ -132,7 +132,12 @@ const SCHEMA_DDL = [
     address TEXT,
     lat REAL,
     lon REAL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    review_status TEXT DEFAULT 'verified',
+    moderation_notes TEXT,
+    inquiries_count INTEGER DEFAULT 0,
+    report_count INTEGER DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS idx_providers_city ON providers(city)`,
 ];
@@ -158,6 +163,22 @@ async function local(): Promise<DatabaseSync | null> {
       /* pragma may fail if already in transaction */
     }
     for (const sql of SCHEMA_DDL) d.exec(sql);
+    // Backward-compatible column migrations for existing local databases
+    try {
+      d.exec("ALTER TABLE providers ADD COLUMN is_active INTEGER DEFAULT 1;");
+    } catch { /* ignore if column exists */ }
+    try {
+      d.exec("ALTER TABLE providers ADD COLUMN review_status TEXT DEFAULT 'verified';");
+    } catch { /* ignore */ }
+    try {
+      d.exec("ALTER TABLE providers ADD COLUMN moderation_notes TEXT;");
+    } catch { /* ignore */ }
+    try {
+      d.exec("ALTER TABLE providers ADD COLUMN inquiries_count INTEGER DEFAULT 0;");
+    } catch { /* ignore */ }
+    try {
+      d.exec("ALTER TABLE providers ADD COLUMN report_count INTEGER DEFAULT 0;");
+    } catch { /* ignore */ }
     _local = d;
     if (!REMOTE) _mode = "local";
     return d;
@@ -322,12 +343,42 @@ export async function kvGet<T>(key: string): Promise<T | undefined> {
 }
 
 // ─── Local Providers / Experience Listings ───────────────────────────────────
+function mapProviderRow(r: Record<string, unknown>): ProviderListing {
+  return {
+    id: String(r.id),
+    city: String(r.city),
+    title: String(r.title),
+    category: r.category as ProviderListing["category"],
+    hostName: String(r.host_name),
+    contactPhone: r.contact_phone ? String(r.contact_phone) : undefined,
+    contactWhatsapp: r.contact_whatsapp ? String(r.contact_whatsapp) : undefined,
+    pricePerPerson: r.price_per_person != null ? Number(r.price_per_person) : undefined,
+    durationMinutes: Number(r.duration_minutes || 60),
+    maxGroupSize: r.max_group_size != null ? Number(r.max_group_size) : undefined,
+    isKidFriendly: Boolean(r.is_kid_friendly),
+    isWheelchairAccessible: Boolean(r.is_wheelchair_accessible),
+    description: String(r.description || ""),
+    availabilitySlots: r.availability_slots ? (JSON.parse(String(r.availability_slots)) as string[]) : [],
+    imageUrl: r.image_url ? String(r.image_url) : undefined,
+    address: r.address ? String(r.address) : "Not listed",
+    lat: r.lat != null ? Number(r.lat) : undefined,
+    lon: r.lon != null ? Number(r.lon) : undefined,
+    createdAt: Number(r.created_at),
+    isActive: r.is_active != null ? Boolean(r.is_active) : true,
+    reviewStatus: (r.review_status as ProviderListing["reviewStatus"]) || "verified",
+    moderationNotes: r.moderation_notes ? String(r.moderation_notes) : undefined,
+    inquiriesCount: Number(r.inquiries_count || 0),
+    reportCount: Number(r.report_count || 0),
+  };
+}
+
 export async function saveProviderListing(provider: ProviderListing): Promise<void> {
   const SQL = `INSERT INTO providers (
     id, city, title, category, host_name, contact_phone, contact_whatsapp,
     price_per_person, duration_minutes, max_group_size, is_kid_friendly,
-    is_wheelchair_accessible, description, availability_slots, image_url, address, lat, lon, created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    is_wheelchair_accessible, description, availability_slots, image_url, address, lat, lon, created_at,
+    is_active, review_status, moderation_notes, inquiries_count, report_count
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET
     title=excluded.title, category=excluded.category, host_name=excluded.host_name,
     contact_phone=excluded.contact_phone, contact_whatsapp=excluded.contact_whatsapp,
@@ -335,7 +386,9 @@ export async function saveProviderListing(provider: ProviderListing): Promise<vo
     max_group_size=excluded.max_group_size, is_kid_friendly=excluded.is_kid_friendly,
     is_wheelchair_accessible=excluded.is_wheelchair_accessible, description=excluded.description,
     availability_slots=excluded.availability_slots, image_url=excluded.image_url,
-    address=excluded.address, lat=excluded.lat, lon=excluded.lon`;
+    address=excluded.address, lat=excluded.lat, lon=excluded.lon,
+    is_active=excluded.is_active, review_status=excluded.review_status,
+    moderation_notes=excluded.moderation_notes`;
 
   const args = [
     provider.id,
@@ -357,6 +410,11 @@ export async function saveProviderListing(provider: ProviderListing): Promise<vo
     provider.lat ?? null,
     provider.lon ?? null,
     provider.createdAt || Date.now(),
+    provider.isActive !== false ? 1 : 0,
+    provider.reviewStatus || "verified",
+    provider.moderationNotes ?? null,
+    provider.inquiriesCount || 0,
+    provider.reportCount || 0,
   ];
 
   await writeLocal(SQL, args);
@@ -368,29 +426,69 @@ export async function loadProvidersForCity(city: string): Promise<ProviderListin
   if (!d) return [];
   try {
     const rows = d.prepare("SELECT * FROM providers WHERE city = ? ORDER BY created_at DESC").all(city.toLowerCase()) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: String(r.id),
-      city: String(r.city),
-      title: String(r.title),
-      category: r.category as ProviderListing["category"],
-      hostName: String(r.host_name),
-      contactPhone: r.contact_phone ? String(r.contact_phone) : undefined,
-      contactWhatsapp: r.contact_whatsapp ? String(r.contact_whatsapp) : undefined,
-      pricePerPerson: r.price_per_person != null ? Number(r.price_per_person) : undefined,
-      durationMinutes: Number(r.duration_minutes || 60),
-      maxGroupSize: r.max_group_size != null ? Number(r.max_group_size) : undefined,
-      isKidFriendly: Boolean(r.is_kid_friendly),
-      isWheelchairAccessible: Boolean(r.is_wheelchair_accessible),
-      description: String(r.description || ""),
-      availabilitySlots: r.availability_slots ? (JSON.parse(String(r.availability_slots)) as string[]) : [],
-      imageUrl: r.image_url ? String(r.image_url) : undefined,
-      address: r.address ? String(r.address) : "Not listed",
-      lat: r.lat != null ? Number(r.lat) : undefined,
-      lon: r.lon != null ? Number(r.lon) : undefined,
-      createdAt: Number(r.created_at),
-    }));
+    return rows.map(mapProviderRow);
   } catch (e) {
     console.error("[db] loadProvidersForCity failed", e);
     return [];
   }
+}
+
+export async function loadProvidersForHost(phoneOrHost: string): Promise<ProviderListing[]> {
+  const d = await local();
+  if (!d) return [];
+  try {
+    const clean = phoneOrHost.trim().replace(/\D/g, "");
+    const raw = phoneOrHost.trim().toLowerCase();
+    const rows = d.prepare(`
+      SELECT * FROM providers 
+      WHERE (contact_phone IS NOT NULL AND contact_phone LIKE ?)
+         OR (contact_whatsapp IS NOT NULL AND contact_whatsapp LIKE ?)
+         OR LOWER(host_name) = ?
+         OR id = ?
+      ORDER BY created_at DESC
+    `).all(`%${clean || raw}%`, `%${clean || raw}%`, raw, raw) as Record<string, unknown>[];
+    return rows.map(mapProviderRow);
+  } catch (e) {
+    console.error("[db] loadProvidersForHost failed", e);
+    return [];
+  }
+}
+
+export async function toggleProviderActive(id: string, active: boolean): Promise<void> {
+  const SQL = "UPDATE providers SET is_active = ? WHERE id = ?";
+  await writeLocal(SQL, [active ? 1 : 0, id]);
+  await writeRemote(SQL, [active ? 1 : 0, id]);
+}
+
+export async function deleteProviderListing(id: string): Promise<void> {
+  const SQL = "DELETE FROM providers WHERE id = ?";
+  await writeLocal(SQL, [id]);
+  await writeRemote(SQL, [id]);
+}
+
+export async function recordProviderInquiry(id: string): Promise<void> {
+  const SQL = "UPDATE providers SET inquiries_count = COALESCE(inquiries_count, 0) + 1 WHERE id = ?";
+  await writeLocal(SQL, [id]);
+  await writeRemote(SQL, [id]);
+}
+
+export async function reportProviderListing(id: string, reason: string): Promise<{ reports: number; flagged: boolean }> {
+  const SQL = "UPDATE providers SET report_count = COALESCE(report_count, 0) + 1 WHERE id = ?";
+  await writeLocal(SQL, [id]);
+  await writeRemote(SQL, [id]);
+
+  const d = await local();
+  let reports = 1;
+  let flagged = false;
+  if (d) {
+    const row = d.prepare("SELECT report_count FROM providers WHERE id = ?").get(id) as { report_count?: number } | undefined;
+    reports = row?.report_count ?? 1;
+    if (reports >= 2) {
+      flagged = true;
+      const flagSQL = "UPDATE providers SET review_status = 'flagged', moderation_notes = ? WHERE id = ?";
+      await writeLocal(flagSQL, [`Flagged by traveler community reports: ${reason}`, id]);
+      await writeRemote(flagSQL, [`Flagged by traveler community reports: ${reason}`, id]);
+    }
+  }
+  return { reports, flagged };
 }

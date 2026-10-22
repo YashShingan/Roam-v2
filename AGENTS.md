@@ -65,5 +65,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - **Forward Vector Calibration**: When loading generative GLB models (Tripo, Meshy, Rodin), the model's forward vector often defaults to $\pm X$ instead of $+Z$. Distinguish between the rear helmet dome (smooth shell, earcups visible on flanks) and the front visor face. If a rotation produces the rear dome, apply a $180^\circ$ ($\pi$ radians) inversion: flipping from $-\pi/2$ to $+\pi/2$ or vice versa brings the front visor and face directly to $+Z$ (facing the camera and user).
    - **Compact Viewport Sizing for Floating Companions**: Ambient floating companions should maintain a compact canvas footprint ($\le 115\times 100\text{px}$) with normalized model scale $\approx 1.25–1.35 / \max(\text{dim})$. Accompanying speech bubbles must be capped at $\le 175\text{px}$ width with tight padding (`p-2`), ensuring they provide contextual assistance without occluding itinerary cards or map interactions.
 
+17. **Community & Local Host Content Moderation Invariants (`src/app/api/providers/route.ts`, `src/lib/places-service.ts`, `src/components/mascot.tsx`)**:
+   - **Automated AI Guardrails**: Any community-contributed or provider-submitted listings must undergo automated AI content moderation prior to public syndication. The guardrail checks (1) 10-digit Indian phone validity, (2) realistic pricing thresholds (≤ ₹25,000 for community experiences), and (3) spam, phishing, or scam keyword detection.
+   - **Safe Public Filtering**: Experience listings with `reviewStatus === "flagged"` or `isActive === false` must be strictly filtered out from traveler discovery feeds, open-search grids, and AI trip planning pipelines in `places-service.ts`.
+   - **Community Safety Threshold**: If 2 or more distinct travelers report a listing for safety violations or scams, the system automatically marks `reviewStatus = 'flagged'`, suspending it from public view pending review.
+   - **Stationary Canvas Flow Invariant**: Any popups, bubbles, or dialogs mounted beside floating interactive 3D widgets must be rendered in absolute positioning outside document flow (`absolute bottom-full mb-2`) so that dismissing or toggling them causes zero coordinate shifts or jerks to the 3D canvas.
+
+
 
 

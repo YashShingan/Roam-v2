@@ -78,6 +78,13 @@ export function DigitalTwinPanel({
       setSimulationResult(data);
       setActiveTab("cascade");
       toast.success("What-If simulation completed!");
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("roam:weather-sim", {
+            detail: { scenario, precipMm: scenario.precipMm, tempC: scenario.tempC },
+          }),
+        );
+      }
     } catch {
       toast.error("Failed to run simulation. Please retry.");
     } finally {
