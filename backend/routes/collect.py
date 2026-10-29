@@ -32,8 +32,9 @@ async def _collect_city(city: str) -> dict:
         return {"error": f"Could not locate {city}"}
 
     lat, lon = geo["lat"], geo["lon"]
+    city_name = geo.get("city") or city
     ctx = GeoCtx(
-        city=geo["city"],
+        city=city_name,
         lat=lat,
         lon=lon,
         radiusKm=15.0,
@@ -41,12 +42,12 @@ async def _collect_city(city: str) -> dict:
     result = await run_collectors(ctx)
     hits = result["hits"]
     health = result["health"]
-    places = run_pipeline(hits, geo["city"], lat, lon)
-    stored = await upsert_places(geo["city"], places)
-    await kv_set(f"harvest:{geo['city'].lower()}", {"at": datetime.now(timezone.utc).timestamp() * 1000, "stored": stored})
+    places = run_pipeline(hits, city_name, lat, lon)
+    stored = await upsert_places(city_name, places)
+    await kv_set(f"harvest:{city_name.lower()}", {"at": datetime.now(timezone.utc).timestamp() * 1000, "stored": stored})
 
     return {
-        "city": geo["city"],
+        "city": city_name,
         "collected": len(places),
         "stored": stored,
         "health": [h.model_dump() if hasattr(h, "model_dump") else h for h in health],

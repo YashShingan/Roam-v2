@@ -129,6 +129,7 @@ async def geocode_city(city: str) -> Optional[dict]:
         return None
     label = result["display_name"]
     return {
+        "city": city,
         "lat": result["lat"],
         "lon": result["lon"],
         "label": label,
